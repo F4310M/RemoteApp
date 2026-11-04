@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn save_find_replace() {
-        let dir = std::env::temp_dir().join(format!("remoteapp-hosts-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("magicremote-hosts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let r = HostRecord {
             name: "Casa".into(),

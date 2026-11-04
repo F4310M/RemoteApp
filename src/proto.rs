@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub const PROTOCOL_VERSION: u32 = 3;
-pub const ALPN: &[u8] = b"remoteapp/3";
+pub const ALPN: &[u8] = b"magicremote/3";
 pub const DEFAULT_PORT: u16 = 47800;
 /// Upper bound for a single control message (keeps a broken peer from
 /// making us allocate gigabytes).

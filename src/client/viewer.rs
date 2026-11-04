@@ -131,7 +131,7 @@ impl ApplicationHandler<UiEvent> for Viewer {
         let (sw, sh) = (self.session.screen.0.max(1) as f64, self.session.screen.1.max(1) as f64);
         let scale = (1600.0 / sw).min(900.0 / sh).min(1.0);
         let attrs = Window::default_attributes()
-            .with_title(format!("RemoteApp: {}", self.session.host_name))
+            .with_title(format!("Magic Remote: {}", self.session.host_name))
             .with_inner_size(LogicalSize::new(sw * scale, sh * scale));
         let window = match event_loop.create_window(attrs) {
             Ok(w) => Arc::new(w),

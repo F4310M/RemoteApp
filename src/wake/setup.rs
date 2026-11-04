@@ -71,7 +71,7 @@ pub async fn open_router_port(port: u16) -> Router {
     let mut last_err = String::new();
     // 0 = permanent; some routers only accept a finite lease.
     for lease in [0u32, 7 * 24 * 3600, 24 * 3600] {
-        match gw.add_port(PortMappingProtocol::UDP, port, target, lease, "RemoteApp").await {
+        match gw.add_port(PortMappingProtocol::UDP, port, target, lease, "Magic Remote").await {
             Ok(()) => return Router::Mapped(SocketAddr::new(external, port)),
             Err(e) => last_err = e.to_string(),
         }
@@ -101,7 +101,7 @@ fn check(ok: Option<bool>, text: impl Into<String>) -> Check {
     Check { ok, text: text.into() }
 }
 
-/// `remoteapp wake-setup`: checks (and with `apply`, fixes) everything
+/// `magicremote wake-setup`: checks (and with `apply`, fixes) everything
 /// needed to wake this PC from standby, and prints the verdict.
 pub async fn run(port: u16, apply: bool) -> anyhow::Result<()> {
     let mut checks = Vec::new();
@@ -154,15 +154,15 @@ pub async fn run(port: u16, apply: bool) -> anyhow::Result<()> {
     match (card_ok, router.public().is_some() || !v6.is_empty()) {
         (true, true) => {
             println!("  This PC can be woken from the Internet.");
-            println!("  Keep `remoteapp host` running and put the PC to SLEEP (not shut down).");
-            println!("  To try it: put it to sleep, then on the other PC run `remoteapp wake <name>`.");
+            println!("  Keep `magicremote host` running and put the PC to SLEEP (not shut down).");
+            println!("  To try it: put it to sleep, then on the other PC run `magicremote wake <name>`.");
         }
         (true, false) => {
             println!("  This PC can be woken from the local network, but not from the Internet.");
             println!("  Fix the item above, or use another always-on device at home to wake it.");
         }
         (false, _) if !apply => {
-            println!("  Not ready. Run `remoteapp wake-setup --apply` as administrator/root to fix the card settings.");
+            println!("  Not ready. Run `magicremote wake-setup --apply` as administrator/root to fix the card settings.");
         }
         (false, _) => println!("  Not ready: see the items marked ✗."),
     }

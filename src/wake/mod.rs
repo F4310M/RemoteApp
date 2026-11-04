@@ -7,7 +7,7 @@
 //! the host opened on the router with UPnP, or over IPv6.
 //!
 //! The host tells paired clients everything needed ([`WakeInfo`]); the
-//! client stores it and `remoteapp wake` fires packets at every known address.
+//! client stores it and `magicremote wake` fires packets at every known address.
 
 pub mod setup;
 

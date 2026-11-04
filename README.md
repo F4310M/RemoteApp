@@ -1,4 +1,4 @@
-# RemoteApp
+# Magic Remote
 
 Desktop remoto **diretto** tra due PC Windows e Linux: nessun server nel mezzo, il video e l'input viaggiano cifrati da un PC all'altro.
 
@@ -9,7 +9,7 @@ Desktop remoto **diretto** tra due PC Windows e Linux: nessun server nel mezzo, 
 Sul PC da controllare:
 
 ```
-remoteapp host
+magicremote host
 ```
 
 Mostra indirizzo, **impronta** (fingerprint) e **password**:
@@ -23,7 +23,7 @@ Mostra indirizzo, **impronta** (fingerprint) e **password**:
 Sul PC da cui controllare:
 
 ```
-remoteapp connect 192.168.1.20 --fingerprint 3248-398E-3F27-2BA5-B124-30DD-0A5B-FE0D
+magicremote connect 192.168.1.20 --fingerprint 3248-398E-3F27-2BA5-B124-30DD-0A5B-FE0D
 ```
 
 Chiede la password e apre una finestra con lo schermo remoto. Mouse e tastiera nella finestra vanno al PC remoto. Chiudi la finestra per disconnetterti.
@@ -35,7 +35,7 @@ Senza `--fingerprint` il client mostra l'impronta e chiede conferma (come SSH). 
 Aggiungi `--pair` alla prima connessione:
 
 ```
-remoteapp connect 192.168.1.20 --fingerprint 3248-398E-... --pair
+magicremote connect 192.168.1.20 --fingerprint 3248-398E-... --pair
 ```
 
 Dopo questa connessione con password, i due PC si riconoscono dalle chiavi:
@@ -43,17 +43,17 @@ Dopo questa connessione con password, i due PC si riconoscono dalle chiavi:
 - il client conosce la chiave pubblica dell'host (impronta confermata);
 - l'host salva la chiave pubblica del client nell'elenco dei dispositivi abbinati.
 
-Dalle volte successive basta `remoteapp connect 192.168.1.20`. Le chiavi private non lasciano mai il proprio PC.
+Dalle volte successive basta `magicremote connect 192.168.1.20`. Le chiavi private non lasciano mai il proprio PC.
 
 Sull'host:
 
 ```
-remoteapp devices            # elenca i dispositivi abbinati
-remoteapp revoke <nome>      # revoca (anche con le prime cifre dell'impronta)
-remoteapp host --paired-only # accetta solo dispositivi abbinati, password disattivata
+magicremote devices            # elenca i dispositivi abbinati
+magicremote revoke <nome>      # revoca (anche con le prime cifre dell'impronta)
+magicremote host --paired-only # accetta solo dispositivi abbinati, password disattivata
 ```
 
-Opzioni utili per `host`: `--password <fissa>` (o variabile `REMOTEAPP_PASSWORD`), `--fps 30`, `--bitrate 8000` (kbit/s), `--port 47800`, `--paired-only`.
+Opzioni utili per `host`: `--password <fissa>` (o variabile `MAGICREMOTE_PASSWORD`), `--fps 30`, `--bitrate 8000` (kbit/s), `--port 47800`, `--paired-only`.
 
 **Firewall:** sul PC host va consentita in ingresso la porta **UDP 47800** (Windows lo chiede al primo avvio).
 
@@ -64,7 +64,7 @@ Per raggiungere il PC di casa dal lavoro o dalle vacanze senza lasciarlo acceso:
 **Una volta, sul PC di casa** (come amministratore su Windows, con `sudo` su Linux):
 
 ```
-remoteapp wake-setup --apply
+magicremote wake-setup --apply
 ```
 
 Il comando controlla e sistema tutto quello che serve:
@@ -77,22 +77,22 @@ Il comando controlla e sistema tutto quello che serve:
 
 Alla fine dice se il PC è **risvegliabile da Internet**, solo dalla rete locale, oppure cosa manca.
 
-Poi lascia `remoteapp host` in esecuzione e metti il PC in sospensione. `remoteapp host` tiene aperta la porta sul router e, a ogni connessione, comunica ai client il MAC e gli indirizzi (locale, pubblico, IPv6).
+Poi lascia `magicremote host` in esecuzione e metti il PC in sospensione. `magicremote host` tiene aperta la porta sul router e, a ogni connessione, comunica ai client il MAC e gli indirizzi (locale, pubblico, IPv6).
 
 **Dal PC fuori casa** (che si è già collegato almeno una volta):
 
 ```
-remoteapp wake casa --connect
+magicremote wake casa --connect
 ```
 
-Il comando manda il pacchetto magico a tutti gli indirizzi noti, aspetta che il PC risponda e apre lo schermo remoto. `remoteapp hosts` elenca i PC conosciuti, e `remoteapp connect casa` si collega per nome.
+Il comando manda il pacchetto magico a tutti gli indirizzi noti, aspetta che il PC risponda e apre lo schermo remoto. `magicremote hosts` elenca i PC conosciuti, e `magicremote connect casa` si collega per nome.
 
 Limiti:
 
 - Serve il **cavo di rete**: quasi nessuna scheda Wi-Fi sveglia un PC sospeso.
 - Con il **CGNAT** (alcune linee FWA e mobili) il PC non è raggiungibile da Internet senza un server. `wake-setup` lo segnala.
 - **Linux** non ha l'ARP offload: da Internet il risveglio può non riuscire dopo qualche minuto di sospensione. Dalla rete locale funziona sempre.
-- Al risveglio Windows mostra la schermata di blocco. Per vederla e inserire il PIN da remoto serve RemoteApp come servizio di sistema, che è il prossimo passo. Fino ad allora funziona se il PC al risveglio non chiede l'accesso.
+- Al risveglio Windows mostra la schermata di blocco. Per vederla e inserire il PIN da remoto serve Magic Remote come servizio di sistema, che è il prossimo passo. Fino ad allora funziona se il PC al risveglio non chiede l'accesso.
 
 ## Sicurezza
 
@@ -102,7 +102,7 @@ Limiti:
 - L'host fa entrare senza password solo le chiavi abbinate. Gli altri devono dare la password; ogni tentativo sbagliato costa 2 secondi e si prova un solo tentativo alla volta. Con `--paired-only` la password è disattivata del tutto.
 - Un solo visualizzatore alla volta.
 
-File salvati in `~/.config/RemoteApp` (Linux) o `%APPDATA%\RemoteApp\config` (Windows): `host_cert.der` / `host_key.der` (la chiave del PC, la seconda è privata), `known_hosts` e `hosts.json` (host conosciuti e come svegliarli), `paired_devices` (dispositivi abbinati).
+File salvati in `~/.config/Magic Remote` (Linux) o `%APPDATA%\Magic Remote\config` (Windows): `host_cert.der` / `host_key.der` (la chiave del PC, la seconda è privata), `known_hosts` e `hosts.json` (host conosciuti e come svegliarli), `paired_devices` (dispositivi abbinati).
 
 ## Compilare
 
@@ -142,7 +142,7 @@ Codice in `src/`: `proto.rs` (protocollo), `tls.rs` (identità e cifratura), `ke
 ## Prossimi passi
 
 1. Servizio di sistema (Windows e Linux): accesso alla schermata di login/PIN, avvio prima del login.
-2. Risveglio, livelli 2 e 3: "compagno di risveglio" (un altro dispositivo di casa con RemoteApp) e presa smart.
+2. Risveglio, livelli 2 e 3: "compagno di risveglio" (un altro dispositivo di casa con Magic Remote) e presa smart.
 3. Collegamento via Internet: STUN/ICE e hole punching, codice di connessione.
 4. Codifica hardware (NVENC, QuickSync, VAAPI).
 5. Wayland (PipeWire + portal, libei).

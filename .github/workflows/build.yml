@@ -13,11 +13,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            exe: remoteapp
-            artifact: remoteapp-linux-x86_64
+            exe: magicremote
+            artifact: magicremote-linux-x86_64
           - os: windows-latest
-            exe: remoteapp.exe
-            artifact: remoteapp-windows-x86_64
+            exe: magicremote.exe
+            artifact: magicremote-windows-x86_64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

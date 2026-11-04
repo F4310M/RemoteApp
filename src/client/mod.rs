@@ -124,7 +124,7 @@ async fn connect(
                 if identity_changed && remembered.is_some() && opts.fingerprint.is_none() {
                     bail!(
                         "{e}\n  WARNING: the host's identity changed since last time. If you did not reinstall \
-                         RemoteApp there, someone may be intercepting the connection. To trust the new identity, \
+                         Magic Remote there, someone may be intercepting the connection. To trust the new identity, \
                          pass --fingerprint with the value the host shows."
                     );
                 }
@@ -138,7 +138,7 @@ async fn connect(
     let Some(conn) = conn else {
         let e = last_err.unwrap_or_else(|| anyhow::anyhow!("no address to try"));
         if saved.as_ref().is_some_and(|r| r.wake.is_some()) {
-            return Err(e.context(format!("the host is not answering. If it is asleep, try `remoteapp wake {} --connect`", opts.host)));
+            return Err(e.context(format!("the host is not answering. If it is asleep, try `magicremote wake {} --connect`", opts.host)));
         }
         return Err(e);
     };
@@ -253,9 +253,9 @@ async fn try_connect(addr: SocketAddr, cfg: quinn::ClientConfig, timeout: Durati
     let bind: SocketAddr = if addr.is_ipv6() { "[::]:0".parse()? } else { "0.0.0.0:0".parse()? };
     let mut endpoint = quinn::Endpoint::client(bind)?;
     endpoint.set_default_client_config(cfg);
-    match tokio::time::timeout(timeout, endpoint.connect(addr, "remoteapp")?).await {
+    match tokio::time::timeout(timeout, endpoint.connect(addr, "magicremote")?).await {
         Err(_) => bail!(
-            "no answer from {addr} within {} s. Is `remoteapp host` running there, and is UDP port {} allowed \
+            "no answer from {addr} within {} s. Is `magicremote host` running there, and is UDP port {} allowed \
              by its firewall?",
             timeout.as_secs(),
             addr.port()
@@ -265,14 +265,14 @@ async fn try_connect(addr: SocketAddr, cfg: quinn::ClientConfig, timeout: Durati
     }
 }
 
-/// `remoteapp wake`: sends magic packets until the host answers.
+/// `magicremote wake`: sends magic packets until the host answers.
 pub fn wake(query: &str, connect: bool, wait: Duration) -> Result<()> {
     let dir = tls::config_dir()?;
     let rec = hosts::find(&dir, query).with_context(|| {
-        format!("unknown host \"{query}\": connect to it once first, so RemoteApp learns how to wake it")
+        format!("unknown host \"{query}\": connect to it once first, so Magic Remote learns how to wake it")
     })?;
     let info = rec.wake.clone().with_context(|| {
-        format!("{} did not share its wake details (connect once with an up-to-date RemoteApp)", rec.name)
+        format!("{} did not share its wake details (connect once with an up-to-date Magic Remote)", rec.name)
     })?;
     if !info.wired {
         println!("  Note: {} uses Wi-Fi, which usually cannot wake a sleeping PC.", rec.name);
@@ -318,8 +318,8 @@ pub fn wake(query: &str, connect: bool, wait: Duration) -> Result<()> {
     })?;
     let Some(addr) = awake else {
         bail!(
-            "{} did not answer within {} s. Is it asleep (not shut down) with `remoteapp host` running? \
-             On the host, `remoteapp wake-setup` checks what is missing.",
+            "{} did not answer within {} s. Is it asleep (not shut down) with `magicremote host` running? \
+             On the host, `magicremote wake-setup` checks what is missing.",
             rec.name,
             wait.as_secs()
         );

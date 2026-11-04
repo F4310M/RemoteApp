@@ -1419,6 +1419,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3d25b0e0b648a86960ac23b7ad4abb9717601dec6f66c165f5b037f3f03065f"
 
 [[package]]
+name = "magicremote"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "clap",
+ "directories",
+ "enigo",
+ "hex",
+ "igd-next",
+ "libc",
+ "netdev",
+ "openh264",
+ "quinn",
+ "rand",
+ "rcgen",
+ "rpassword",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2",
+ "softbuffer",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "windows",
+ "winit",
+ "x11rb",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2327,37 +2358,6 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
-name = "remoteapp"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bincode",
- "clap",
- "directories",
- "enigo",
- "hex",
- "igd-next",
- "libc",
- "netdev",
- "openh264",
- "quinn",
- "rand",
- "rcgen",
- "rpassword",
- "rustls",
- "serde",
- "serde_json",
- "sha2",
- "softbuffer",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "windows",
- "winit",
- "x11rb",
-]
 
 [[package]]
 name = "ring"
