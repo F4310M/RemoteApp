@@ -1,10 +1,13 @@
 //! Identity and encryption.
 //!
-//! There is no certificate authority: each host generates a self-signed
-//! certificate once and keeps it. The client trusts a host only if the
-//! certificate's SHA-256 fingerprint matches one the user confirmed, either
-//! passed on the command line or remembered in `known_hosts`
-//! (trust on first use, like SSH).
+//! There is no certificate authority: each PC generates a self-signed
+//! certificate (its "device key") once and keeps it, using it both as host
+//! and as client. Keys are recognised by their SHA-256 fingerprint:
+//! - the client trusts a host only if its fingerprint matches one the user
+//!   confirmed, passed on the command line or remembered in `known_hosts`
+//!   (trust on first use, like SSH);
+//! - the host lets a client in without password only if the client's
+//!   fingerprint is in its paired devices list (see `devices.rs`).
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,7 +16,8 @@ use anyhow::{Context, Result};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, ring};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
-use rustls::{DigitallySignedStruct, SignatureScheme};
+use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
+use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
 use sha2::{Digest, Sha256};
 
 use crate::proto::ALPN;
@@ -55,13 +59,19 @@ pub fn fingerprint_matches(typed: &str, full: &str) -> bool {
     typed.len() >= 32 && full.starts_with(&typed)
 }
 
+/// Looser match used to pick a device to revoke: at least 8 hex digits.
+pub fn fingerprint_matches_prefix(typed: &str, full: &str) -> bool {
+    let typed = normalize(typed);
+    typed.len() >= 8 && full.starts_with(&typed)
+}
+
 pub struct HostIdentity {
     pub cert: CertificateDer<'static>,
     pub key: PrivateKeyDer<'static>,
     pub fingerprint: String,
 }
 
-/// Loads the host certificate, creating it on first run.
+/// Loads this PC's device key, creating it on first run.
 pub fn load_or_create_identity(dir: &Path) -> Result<HostIdentity> {
     let cert_path = dir.join("host_cert.der");
     let key_path = dir.join("host_key.der");
@@ -99,7 +109,7 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
 pub fn server_config(id: &HostIdentity) -> Result<quinn::ServerConfig> {
     let mut tls = rustls::ServerConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
-        .with_no_client_auth()
+        .with_client_cert_verifier(Arc::new(AnyClientKey { provider: provider() }))
         .with_single_cert(vec![id.cert.clone()], id.key.clone_key())?;
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
@@ -118,14 +128,14 @@ pub enum Expect {
     FirstUse,
 }
 
-pub fn client_config(expect: Expect) -> Result<(quinn::ClientConfig, Arc<Mutex<Option<String>>>)> {
+pub fn client_config(expect: Expect, id: &HostIdentity) -> Result<(quinn::ClientConfig, Arc<Mutex<Option<String>>>)> {
     let seen = Arc::new(Mutex::new(None));
     let verifier = Arc::new(FingerprintVerifier { expect, seen: seen.clone(), provider: provider() });
     let mut tls = rustls::ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
         .with_custom_certificate_verifier(verifier)
-        .with_no_client_auth();
+        .with_client_auth_cert(vec![id.cert.clone()], id.key.clone_key())?;
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(crypto));
@@ -136,7 +146,7 @@ pub fn client_config(expect: Expect) -> Result<(quinn::ClientConfig, Arc<Mutex<O
 fn transport() -> quinn::TransportConfig {
     let mut t = quinn::TransportConfig::default();
     t.keep_alive_interval(Some(std::time::Duration::from_secs(3)));
-    t.max_idle_timeout(Some(std::time::Duration::from_secs(15).try_into().unwrap()));
+    t.max_idle_timeout(Some(std::time::Duration::from_secs(10).try_into().unwrap()));
     // Video bursts (keyframes) can be large; give the stream room.
     t.stream_receive_window((16u32 * 1024 * 1024).into());
     t.receive_window((32u32 * 1024 * 1024).into());
@@ -192,6 +202,57 @@ impl ServerCertVerifier for FingerprintVerifier {
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.provider.signature_verification_algorithms.supported_schemes()
     }
+}
+
+/// Accepts any client key that proves possession of its private key.
+/// Whether that key may skip the password is decided after the handshake,
+/// by looking its fingerprint up in the paired devices list.
+#[derive(Debug)]
+struct AnyClientKey {
+    provider: Arc<CryptoProvider>,
+}
+
+impl ClientCertVerifier for AnyClientKey {
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _now: UnixTime,
+    ) -> Result<ClientCertVerified, rustls::Error> {
+        Ok(ClientCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        Err(rustls::Error::General("TLS 1.2 is not supported".into()))
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.provider.signature_verification_algorithms.supported_schemes()
+    }
+}
+
+/// Fingerprint of the key the other side presented in the handshake.
+pub fn peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
+    let certs = conn.peer_identity()?.downcast::<Vec<CertificateDer<'static>>>().ok()?;
+    certs.first().map(|c| fingerprint(c))
 }
 
 /// `known_hosts` maps `address` to a full fingerprint, one per line.

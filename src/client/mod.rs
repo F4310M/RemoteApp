@@ -14,12 +14,15 @@ use openh264::formats::YUVSource;
 use tokio::sync::mpsc;
 
 use crate::proto::{self, ClientMsg, DEFAULT_PORT, HostMsg, PROTOCOL_VERSION, VideoFrame};
+use crate::devices;
 use crate::tls::{self, Expect};
 
 pub struct ConnectOptions {
     pub host: String,
     pub password: Option<String>,
     pub fingerprint: Option<String>,
+    /// Ask the host to remember this PC's key.
+    pub pair: bool,
 }
 
 /// A decoded picture ready to draw, 0x00RRGGBB per pixel.
@@ -90,7 +93,8 @@ async fn connect(
         (None, Some(fp)) => Expect::Pinned(fp.clone()),
         (None, None) => Expect::FirstUse,
     };
-    let (client_cfg, seen) = tls::client_config(expect.clone())?;
+    let id = tls::load_or_create_identity(&dir)?;
+    let (client_cfg, seen) = tls::client_config(expect.clone(), &id)?;
     let bind: SocketAddr = if addr.is_ipv6() { "[::]:0".parse()? } else { "0.0.0.0:0".parse()? };
     let mut endpoint = quinn::Endpoint::client(bind)?;
     endpoint.set_default_client_config(client_cfg);
@@ -128,16 +132,37 @@ async fn connect(
         }
     }
 
-    let password = match &opts.password {
-        Some(p) => p.clone(),
-        None => tokio::task::spawn_blocking(|| rpassword::prompt_password("  Password: ")).await??,
-    };
-
     let (mut ctl_send, mut ctl_recv) = conn.open_bi().await?;
-    proto::write_msg(&mut ctl_send, &ClientMsg::Hello { version: PROTOCOL_VERSION, password }).await?;
-    let (screen, host_name) = match proto::read_msg::<_, HostMsg>(&mut ctl_recv).await? {
-        Some(HostMsg::Welcome { screen_width, screen_height, host_name }) => ((screen_width, screen_height), host_name),
+    let hello = ClientMsg::Hello { version: PROTOCOL_VERSION, name: devices::this_device_name(), pair: opts.pair };
+    let busy = |e: anyhow::Error| match conn.close_reason() {
+        Some(quinn::ConnectionError::ApplicationClosed(c)) if &c.reason[..] == b"busy" => {
+            anyhow::anyhow!("the host is busy: another PC is connected to it")
+        }
+        _ => e,
+    };
+    proto::write_msg(&mut ctl_send, &hello).await.map_err(busy)?;
+    let mut reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv).await.map_err(busy)?;
+    if let Some(HostMsg::NeedPassword) = reply {
+        let password = match &opts.password {
+            Some(p) => p.clone(),
+            None => tokio::task::spawn_blocking(|| rpassword::prompt_password("  Password: "))
+                .await?
+                .context("the host wants the password but there is no terminal to ask it: use --password")?,
+        };
+        proto::write_msg(&mut ctl_send, &ClientMsg::Password(password)).await?;
+        reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv).await?;
+    }
+    let (screen, host_name) = match reply {
+        Some(HostMsg::Welcome { screen_width, screen_height, host_name, paired }) => {
+            if paired && opts.pair {
+                println!("  Paired: next time this PC connects without password.");
+            } else if paired {
+                println!("  Paired device: no password needed.");
+            }
+            ((screen_width, screen_height), host_name)
+        }
         Some(HostMsg::Rejected { reason }) => bail!("the host refused the connection: {reason}"),
+        Some(HostMsg::NeedPassword) => bail!("the host asked for the password twice"),
         None => bail!("the host closed the connection"),
     };
     // Only remember a host once it accepted us.
