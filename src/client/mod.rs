@@ -247,7 +247,7 @@ fn decode_loop(
             pic.width = w;
             pic.height = h;
             pic.pixels.resize(w * h, 0);
-            for (dst, px) in pic.pixels.iter_mut().zip(rgba.chunks_exact(4)) {
+            for (dst, px) in pic.pixels.iter_mut().zip(rgba.as_chunks::<4>().0) {
                 *dst = (px[0] as u32) << 16 | (px[1] as u32) << 8 | px[2] as u32;
             }
         }
