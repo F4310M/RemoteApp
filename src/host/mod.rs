@@ -13,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::proto::{self, ClientMsg, HostMsg, PROTOCOL_VERSION, VideoFrame};
-use crate::tls;
+use crate::{devices, tls};
 
 pub struct HostOptions {
     pub bind: IpAddr,
@@ -21,6 +21,8 @@ pub struct HostOptions {
     pub password: Option<String>,
     pub fps: u32,
     pub bitrate_kbps: u32,
+    /// Refuse password logins: only paired devices may connect.
+    pub paired_only: bool,
 }
 
 pub async fn run(opts: HostOptions) -> Result<()> {
@@ -38,11 +40,15 @@ pub async fn run(opts: HostOptions) -> Result<()> {
         None => println!("  Port:        UDP {}", opts.port),
     }
     println!("  Fingerprint: {}", tls::display_fingerprint(&id.fingerprint));
-    println!("  Password:    {password}");
+    if opts.paired_only {
+        println!("  Password:    (disabled: only paired devices, {} known)", devices::list(&dir).len());
+    } else {
+        println!("  Password:    {password}");
+    }
     println!("  ────────────────────────────────────────────");
     println!("  On the other PC run:");
     println!(
-        "  remoteapp connect {} --fingerprint {}",
+        "  remoteapp connect {} --fingerprint {} --pair",
         lan_ip().map(|i| i.to_string()).unwrap_or_else(|| "<this-pc-ip>".into()),
         tls::display_fingerprint(&id.fingerprint)
     );
@@ -79,27 +85,47 @@ async fn session(conn: &quinn::Connection, opts: &HostOptions, password: &str) -
     let remote = conn.remote_address();
     let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await?;
 
+    let client_fp = tls::peer_fingerprint(conn).context("client presented no key")?;
+    let dir = tls::config_dir()?;
+
     let hello = tokio::time::timeout(Duration::from_secs(10), proto::read_msg::<_, ClientMsg>(&mut ctl_recv))
         .await
         .context("client did not say hello")??;
-    let reject = match &hello {
-        Some(ClientMsg::Hello { version, .. }) if *version != PROTOCOL_VERSION => {
-            Some(format!("version mismatch (host {PROTOCOL_VERSION}, client {version})"))
+    let (name, pair) = match hello {
+        Some(ClientMsg::Hello { version, name, pair }) if version == PROTOCOL_VERSION => (devices::clean(&name), pair),
+        Some(ClientMsg::Hello { version, .. }) => {
+            return reject(&mut ctl_send, format!("version mismatch (host {PROTOCOL_VERSION}, client {version})")).await;
         }
-        Some(ClientMsg::Hello { password: p, .. }) if !constant_time_eq(p.as_bytes(), password.as_bytes()) => {
+        _ => return reject(&mut ctl_send, "expected hello".into()).await,
+    };
+    let who = format!("\"{name}\" ({}, {remote})", &tls::display_fingerprint(&client_fp)[..9]);
+
+    let paired = if devices::is_paired(&dir, &client_fp) {
+        println!("  ● paired device {who} connected");
+        true
+    } else if opts.paired_only {
+        return reject(&mut ctl_send, "this host accepts only paired devices".into()).await;
+    } else {
+        proto::write_msg(&mut ctl_send, &HostMsg::NeedPassword).await?;
+        // The person on the other side may be typing it.
+        let answer = tokio::time::timeout(Duration::from_secs(120), proto::read_msg::<_, ClientMsg>(&mut ctl_recv))
+            .await
+            .context("client did not send the password")??;
+        let ok = matches!(&answer, Some(ClientMsg::Password(p)) if constant_time_eq(p.as_bytes(), password.as_bytes()));
+        if !ok {
             // Slow down guessing.
             tokio::time::sleep(Duration::from_secs(2)).await;
-            Some("wrong password".to_string())
+            return reject(&mut ctl_send, "wrong password".into()).await;
         }
-        Some(ClientMsg::Hello { .. }) => None,
-        _ => Some("expected hello".to_string()),
+        if pair {
+            devices::pair(&dir, &client_fp, &name)?;
+            println!("  ● new device {who} paired and connected");
+            println!("    (remove it with: remoteapp revoke \"{name}\")");
+        } else {
+            println!("  ● {who} connected with password");
+        }
+        pair
     };
-    if let Some(reason) = reject {
-        proto::write_msg(&mut ctl_send, &HostMsg::Rejected { reason: reason.clone() }).await?;
-        let _ = ctl_send.finish();
-        let _ = tokio::time::timeout(Duration::from_secs(2), ctl_send.stopped()).await;
-        bail!("rejected: {reason}");
-    }
 
     // Start capture first so we can tell the client the screen size.
     let stop = Arc::new(AtomicBool::new(false));
@@ -119,17 +145,12 @@ async fn session(conn: &quinn::Connection, opts: &HostOptions, password: &str) -
     let (w, h) = match ready_rx.await {
         Ok(Ok(size)) => size,
         Ok(Err(e)) => {
-            let reason = format!("host cannot capture the screen: {e:#}");
-            proto::write_msg(&mut ctl_send, &HostMsg::Rejected { reason: reason.clone() }).await?;
-            let _ = ctl_send.finish();
-            let _ = tokio::time::timeout(Duration::from_secs(2), ctl_send.stopped()).await;
-            bail!(reason);
+            return reject(&mut ctl_send, format!("host cannot capture the screen: {e:#}")).await;
         }
         Err(_) => bail!("video thread died"),
     };
-    proto::write_msg(&mut ctl_send, &HostMsg::Welcome { screen_width: w, screen_height: h, host_name: host_name() })
-        .await?;
-    println!("  ● {remote} connected");
+    let welcome = HostMsg::Welcome { screen_width: w, screen_height: h, host_name: devices::this_device_name(), paired };
+    proto::write_msg(&mut ctl_send, &welcome).await?;
 
     let (input_tx, input_rx) = std::sync::mpsc::channel();
     {
@@ -158,7 +179,7 @@ async fn session(conn: &quinn::Connection, opts: &HostOptions, password: &str) -
                     let _ = input_tx.send(ev);
                 }
                 ClientMsg::RequestKeyframe => want_keyframe.store(true, Ordering::Relaxed),
-                ClientMsg::Hello { .. } => {}
+                ClientMsg::Hello { .. } | ClientMsg::Password(_) => {}
             }
         }
         Ok::<_, anyhow::Error>(())
@@ -168,7 +189,7 @@ async fn session(conn: &quinn::Connection, opts: &HostOptions, password: &str) -
     stop.store(true, Ordering::Relaxed);
     drop(input_tx);
     video_task.abort();
-    println!("  ○ {remote} disconnected");
+    println!("  ○ {who} disconnected");
     result
 }
 
@@ -234,6 +255,13 @@ fn video_loop(
     Ok(())
 }
 
+async fn reject(send: &mut quinn::SendStream, reason: String) -> Result<()> {
+    proto::write_msg(send, &HostMsg::Rejected { reason: reason.clone() }).await?;
+    let _ = send.finish();
+    let _ = tokio::time::timeout(Duration::from_secs(2), send.stopped()).await;
+    bail!("rejected: {reason}");
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
@@ -244,15 +272,6 @@ fn random_password() -> String {
     let mut bytes = [0u8; 10];
     rand::fill(&mut bytes);
     bytes.iter().map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char).collect()
-}
-
-fn host_name() -> String {
-    std::env::var("COMPUTERNAME")
-        .or_else(|_| std::env::var("HOSTNAME"))
-        .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "host".into())
 }
 
 /// The address other PCs on the LAN most likely use to reach us. Connecting

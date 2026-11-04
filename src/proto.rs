@@ -9,8 +9,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u32 = 1;
-pub const ALPN: &[u8] = b"remoteapp/1";
+pub const PROTOCOL_VERSION: u32 = 2;
+pub const ALPN: &[u8] = b"remoteapp/2";
 pub const DEFAULT_PORT: u16 = 47800;
 /// Upper bound for a single control message (keeps a broken peer from
 /// making us allocate gigabytes).
@@ -41,7 +41,11 @@ pub enum InputEvent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
-    Hello { version: u32, password: String },
+    /// First message. `name` is shown on the host; `pair` asks the host to
+    /// remember this device's key so later connections need no password.
+    Hello { version: u32, name: String, pair: bool },
+    /// Answer to [`HostMsg::NeedPassword`].
+    Password(String),
     Input(InputEvent),
     /// The decoder lost sync (or just started): send an IDR frame.
     RequestKeyframe,
@@ -49,7 +53,10 @@ pub enum ClientMsg {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum HostMsg {
-    Welcome { screen_width: u32, screen_height: u32, host_name: String },
+    /// This device's key is not authorized yet: send the password.
+    NeedPassword,
+    /// `paired` is true when this device is (now) authorized by key.
+    Welcome { screen_width: u32, screen_height: u32, host_name: String, paired: bool },
     Rejected { reason: String },
 }
 
