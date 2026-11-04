@@ -57,6 +57,43 @@ Opzioni utili per `host`: `--password <fissa>` (o variabile `REMOTEAPP_PASSWORD`
 
 **Firewall:** sul PC host va consentita in ingresso la porta **UDP 47800** (Windows lo chiede al primo avvio).
 
+## Accendere il PC da remoto (standby raggiungibile)
+
+Per raggiungere il PC di casa dal lavoro o dalle vacanze senza lasciarlo acceso: invece di spegnerlo lo metti in **sospensione** (1-3 W). La scheda di rete resta in ascolto e sveglia il PC quando riceve il "pacchetto magico" Wake-on-LAN.
+
+**Una volta, sul PC di casa** (come amministratore su Windows, con `sudo` su Linux):
+
+```
+remoteapp wake-setup --apply
+```
+
+Il comando controlla e sistema tutto quello che serve:
+
+- la scheda di rete accetta il pacchetto magico;
+- su Windows è attivo l'ARP offload: da sospeso il PC continua a rispondere al router, che così non lo "dimentica";
+- il router apre la porta UDP 47800 da solo (UPnP);
+- la linea non è dietro CGNAT;
+- c'è un indirizzo IPv6 pubblico.
+
+Alla fine dice se il PC è **risvegliabile da Internet**, solo dalla rete locale, oppure cosa manca.
+
+Poi lascia `remoteapp host` in esecuzione e metti il PC in sospensione. `remoteapp host` tiene aperta la porta sul router e, a ogni connessione, comunica ai client il MAC e gli indirizzi (locale, pubblico, IPv6).
+
+**Dal PC fuori casa** (che si è già collegato almeno una volta):
+
+```
+remoteapp wake casa --connect
+```
+
+Il comando manda il pacchetto magico a tutti gli indirizzi noti, aspetta che il PC risponda e apre lo schermo remoto. `remoteapp hosts` elenca i PC conosciuti, e `remoteapp connect casa` si collega per nome.
+
+Limiti:
+
+- Serve il **cavo di rete**: quasi nessuna scheda Wi-Fi sveglia un PC sospeso.
+- Con il **CGNAT** (alcune linee FWA e mobili) il PC non è raggiungibile da Internet senza un server. `wake-setup` lo segnala.
+- **Linux** non ha l'ARP offload: da Internet il risveglio può non riuscire dopo qualche minuto di sospensione. Dalla rete locale funziona sempre.
+- Al risveglio Windows mostra la schermata di blocco. Per vederla e inserire il PIN da remoto serve RemoteApp come servizio di sistema, che è il prossimo passo. Fino ad allora funziona se il PC al risveglio non chiede l'accesso.
+
 ## Sicurezza
 
 - Trasporto **QUIC con TLS 1.3**: tutto è cifrato.
@@ -65,7 +102,7 @@ Opzioni utili per `host`: `--password <fissa>` (o variabile `REMOTEAPP_PASSWORD`
 - L'host fa entrare senza password solo le chiavi abbinate. Gli altri devono dare la password; ogni tentativo sbagliato costa 2 secondi e si prova un solo tentativo alla volta. Con `--paired-only` la password è disattivata del tutto.
 - Un solo visualizzatore alla volta.
 
-File salvati in `~/.config/RemoteApp` (Linux) o `%APPDATA%\RemoteApp\config` (Windows): `host_cert.der` / `host_key.der` (la chiave del PC, la seconda è privata), `known_hosts` (host conosciuti), `paired_devices` (dispositivi abbinati).
+File salvati in `~/.config/RemoteApp` (Linux) o `%APPDATA%\RemoteApp\config` (Windows): `host_cert.der` / `host_key.der` (la chiave del PC, la seconda è privata), `known_hosts` e `hosts.json` (host conosciuti e come svegliarli), `paired_devices` (dispositivi abbinati).
 
 ## Compilare
 
@@ -104,7 +141,9 @@ Codice in `src/`: `proto.rs` (protocollo), `tls.rs` (identità e cifratura), `ke
 
 ## Prossimi passi
 
-1. Collegamento via Internet: STUN/ICE e hole punching, codice di connessione.
-2. Codifica hardware (NVENC, QuickSync, VAAPI).
-3. Wayland (PipeWire + portal, libei).
-4. Scelta del monitor, appunti condivisi, audio, interfaccia grafica.
+1. Servizio di sistema (Windows e Linux): accesso alla schermata di login/PIN, avvio prima del login.
+2. Risveglio, livelli 2 e 3: "compagno di risveglio" (un altro dispositivo di casa con RemoteApp) e presa smart.
+3. Collegamento via Internet: STUN/ICE e hole punching, codice di connessione.
+4. Codifica hardware (NVENC, QuickSync, VAAPI).
+5. Wayland (PipeWire + portal, libei).
+6. Scelta del monitor, appunti condivisi, audio, interfaccia grafica.

@@ -9,8 +9,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u32 = 2;
-pub const ALPN: &[u8] = b"remoteapp/2";
+pub const PROTOCOL_VERSION: u32 = 3;
+pub const ALPN: &[u8] = b"remoteapp/3";
 pub const DEFAULT_PORT: u16 = 47800;
 /// Upper bound for a single control message (keeps a broken peer from
 /// making us allocate gigabytes).
@@ -56,7 +56,14 @@ pub enum HostMsg {
     /// This device's key is not authorized yet: send the password.
     NeedPassword,
     /// `paired` is true when this device is (now) authorized by key.
-    Welcome { screen_width: u32, screen_height: u32, host_name: String, paired: bool },
+    /// `wake` tells the client how to wake this host from standby later.
+    Welcome {
+        screen_width: u32,
+        screen_height: u32,
+        host_name: String,
+        paired: bool,
+        wake: Option<crate::wake::WakeInfo>,
+    },
     Rejected { reason: String },
 }
 

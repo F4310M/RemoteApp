@@ -5,7 +5,7 @@ mod encode;
 mod input;
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,8 @@ use anyhow::{Context, Result, bail};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
 use crate::proto::{self, ClientMsg, HostMsg, PROTOCOL_VERSION, VideoFrame};
-use crate::{devices, tls};
+use crate::wake::setup::{self as reach, Router};
+use crate::{devices, tls, wake};
 
 pub struct HostOptions {
     pub bind: IpAddr,
@@ -23,6 +24,8 @@ pub struct HostOptions {
     pub bitrate_kbps: u32,
     /// Refuse password logins: only paired devices may connect.
     pub paired_only: bool,
+    /// Do not ask the router to open the port.
+    pub no_upnp: bool,
 }
 
 pub async fn run(opts: HostOptions) -> Result<()> {
@@ -32,6 +35,12 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     let endpoint = quinn::Endpoint::server(tls::server_config(&id)?, SocketAddr::new(opts.bind, opts.port))
         .with_context(|| format!("cannot listen on UDP port {}", opts.port))?;
 
+    let router = if opts.no_upnp { Router::Disabled } else { reach::open_router_port(opts.port).await };
+    let router = Arc::new(Mutex::new(router));
+    if !opts.no_upnp {
+        reach::keep_router_port_open(opts.port, router.clone());
+    }
+
     println!();
     println!("  RemoteApp host ready");
     println!("  ────────────────────────────────────────────");
@@ -39,6 +48,7 @@ pub async fn run(opts: HostOptions) -> Result<()> {
         Some(ip) => println!("  Address:     {ip}  (UDP port {})", opts.port),
         None => println!("  Port:        UDP {}", opts.port),
     }
+    println!("  Internet:    {}", router.lock().unwrap().describe());
     println!("  Fingerprint: {}", tls::display_fingerprint(&id.fingerprint));
     if opts.paired_only {
         println!("  Password:    (disabled: only paired devices, {} known)", devices::list(&dir).len());
@@ -60,7 +70,7 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     let slot = Arc::new(Semaphore::new(1));
 
     while let Some(incoming) = endpoint.accept().await {
-        let (opts, password, slot) = (opts.clone(), password.clone(), slot.clone());
+        let (opts, password, slot, router) = (opts.clone(), password.clone(), slot.clone(), router.clone());
         tokio::spawn(async move {
             let remote = incoming.remote_address();
             let conn = match incoming.await {
@@ -71,8 +81,11 @@ pub async fn run(opts: HostOptions) -> Result<()> {
                 conn.close(1u32.into(), b"busy");
                 return tracing::info!("refused {remote}: another viewer is connected");
             };
-            match session(&conn, &opts, &password).await {
+            let public = router.lock().unwrap().public();
+            match session(&conn, &opts, &password, public).await {
                 Ok(()) => tracing::info!("{remote} disconnected"),
+                // `remoteapp wake` only checks that we are up.
+                Err(_) if is_probe(&conn) => {}
                 Err(e) => tracing::warn!("session with {remote} ended: {e:#}"),
             }
             conn.close(0u32.into(), b"bye");
@@ -81,7 +94,16 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     Ok(())
 }
 
-async fn session(conn: &quinn::Connection, opts: &HostOptions, password: &str) -> Result<()> {
+fn is_probe(conn: &quinn::Connection) -> bool {
+    matches!(conn.close_reason(), Some(quinn::ConnectionError::ApplicationClosed(c)) if &c.reason[..] == b"probe")
+}
+
+async fn session(
+    conn: &quinn::Connection,
+    opts: &HostOptions,
+    password: &str,
+    public: Option<SocketAddr>,
+) -> Result<()> {
     let remote = conn.remote_address();
     let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await?;
 
@@ -149,7 +171,13 @@ async fn session(conn: &quinn::Connection, opts: &HostOptions, password: &str) -
         }
         Err(_) => bail!("video thread died"),
     };
-    let welcome = HostMsg::Welcome { screen_width: w, screen_height: h, host_name: devices::this_device_name(), paired };
+    let welcome = HostMsg::Welcome {
+        screen_width: w,
+        screen_height: h,
+        host_name: devices::this_device_name(),
+        paired,
+        wake: wake::local_info(opts.port, public),
+    };
     proto::write_msg(&mut ctl_send, &welcome).await?;
 
     let (input_tx, input_rx) = std::sync::mpsc::channel();

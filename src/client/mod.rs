@@ -1,5 +1,6 @@
 //! The machine in control: shows the remote screen, sends mouse and keyboard.
 
+pub mod hosts;
 mod viewer;
 
 use std::net::SocketAddr;
@@ -23,6 +24,8 @@ pub struct ConnectOptions {
     pub fingerprint: Option<String>,
     /// Ask the host to remember this PC's key.
     pub pair: bool,
+    /// Try this address first (set by `wake --connect`).
+    pub prefer: Option<SocketAddr>,
 }
 
 /// A decoded picture ready to draw, 0x00RRGGBB per pixel.
@@ -59,7 +62,7 @@ pub fn run(opts: ConnectOptions) -> Result<()> {
     result
 }
 
-fn with_default_port(host: &str) -> String {
+pub fn with_default_port(host: &str) -> String {
     // "1.2.3.4", "pc.lan", "[::1]" get the default port; "x:port" is kept.
     let has_port = match host.rfind(':') {
         Some(i) if host.starts_with('[') => host[..i].ends_with(']'),
@@ -80,14 +83,24 @@ async fn connect(
     proxy: winit::event_loop::EventLoopProxy<UiEvent>,
 ) -> Result<(quinn::Connection, Session)> {
     let dir = tls::config_dir()?;
+    let saved = hosts::find(&dir, &opts.host);
     let target = with_default_port(&opts.host);
-    let addr: SocketAddr = tokio::net::lookup_host(&target)
-        .await
-        .with_context(|| format!("cannot resolve {target}"))?
-        .next()
-        .with_context(|| format!("no address for {target}"))?;
+    let mut addrs: Vec<SocketAddr> = match &saved {
+        Some(rec) => rec.candidates(),
+        None => tokio::net::lookup_host(&target)
+            .await
+            .with_context(|| format!("cannot resolve {target}"))?
+            .collect(),
+    };
+    if let Some(p) = opts.prefer {
+        addrs.retain(|a| *a != p);
+        addrs.insert(0, p);
+    }
+    if addrs.is_empty() {
+        bail!("no address for {target}");
+    }
 
-    let remembered = tls::known_host(&dir, &target);
+    let remembered = saved.as_ref().map(|r| r.fingerprint.clone()).or_else(|| tls::known_host(&dir, &target));
     let expect = match (&opts.fingerprint, &remembered) {
         (Some(fp), _) => Expect::Pinned(fp.clone()),
         (None, Some(fp)) => Expect::Pinned(fp.clone()),
@@ -95,29 +108,41 @@ async fn connect(
     };
     let id = tls::load_or_create_identity(&dir)?;
     let (client_cfg, seen) = tls::client_config(expect.clone(), &id)?;
-    let bind: SocketAddr = if addr.is_ipv6() { "[::]:0".parse()? } else { "0.0.0.0:0".parse()? };
-    let mut endpoint = quinn::Endpoint::client(bind)?;
-    endpoint.set_default_client_config(client_cfg);
 
-    println!("  Connecting to {addr}...");
-    let conn = match tokio::time::timeout(Duration::from_secs(10), endpoint.connect(addr, "remoteapp")?).await {
-        Err(_) => bail!(
-            "no answer from {addr} within 10 s. Is `remoteapp host` running there, and is UDP port {} \
-             allowed by its firewall?",
-            addr.port()
-        ),
-        Ok(Err(e)) => {
-            if remembered.is_some() && opts.fingerprint.is_none() && e.to_string().contains("fingerprint") {
-                bail!(
-                    "{e}\n  WARNING: the host's identity changed since last time. If you did not reinstall \
-                     RemoteApp there, someone may be intercepting the connection. To trust the new identity, \
-                     pass --fingerprint with the value the host shows."
-                );
+    let per_try = if addrs.len() == 1 { Duration::from_secs(10) } else { Duration::from_secs(4) };
+    let mut conn = None;
+    let mut last_err = None;
+    for addr in &addrs {
+        println!("  Connecting to {addr}...");
+        match try_connect(*addr, client_cfg.clone(), per_try).await {
+            Ok(c) => {
+                conn = Some(c);
+                break;
             }
-            return Err(e).context("connection failed");
+            Err(e) => {
+                let identity_changed = e.to_string().contains("fingerprint");
+                if identity_changed && remembered.is_some() && opts.fingerprint.is_none() {
+                    bail!(
+                        "{e}\n  WARNING: the host's identity changed since last time. If you did not reinstall \
+                         RemoteApp there, someone may be intercepting the connection. To trust the new identity, \
+                         pass --fingerprint with the value the host shows."
+                    );
+                }
+                if identity_changed {
+                    return Err(e);
+                }
+                last_err = Some(e);
+            }
         }
-        Ok(Ok(c)) => c,
+    }
+    let Some(conn) = conn else {
+        let e = last_err.unwrap_or_else(|| anyhow::anyhow!("no address to try"));
+        if saved.as_ref().is_some_and(|r| r.wake.is_some()) {
+            return Err(e.context(format!("the host is not answering. If it is asleep, try `remoteapp wake {} --connect`", opts.host)));
+        }
+        return Err(e);
     };
+    let used_addr = conn.remote_address();
     let fp = seen.lock().unwrap().clone().context("host sent no certificate")?;
 
     if matches!(expect, Expect::FirstUse) {
@@ -153,7 +178,16 @@ async fn connect(
         reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv).await?;
     }
     let (screen, host_name) = match reply {
-        Some(HostMsg::Welcome { screen_width, screen_height, host_name, paired }) => {
+        Some(HostMsg::Welcome { screen_width, screen_height, host_name, paired, wake }) => {
+            let rec = hosts::HostRecord {
+                name: host_name.clone(),
+                fingerprint: fp.clone(),
+                last_addr: used_addr,
+                wake: wake.or_else(|| saved.as_ref().and_then(|r| r.wake.clone())),
+            };
+            if let Err(e) = hosts::save(&dir, rec) {
+                tracing::warn!("cannot save host details: {e}");
+            }
             if paired && opts.pair {
                 println!("  Paired: next time this PC connects without password.");
             } else if paired {
@@ -166,7 +200,7 @@ async fn connect(
         None => bail!("the host closed the connection"),
     };
     // Only remember a host once it accepted us.
-    if remembered.as_deref() != Some(fp.as_str()) {
+    if saved.is_none() && remembered.as_deref() != Some(fp.as_str()) {
         tls::remember_host(&dir, &target, &fp)?;
     }
 
@@ -212,6 +246,91 @@ async fn connect(
     }
 
     Ok((conn, Session { host_name, screen, input: input_tx, picture }))
+}
+
+/// One QUIC handshake attempt; fails fast on a timeout.
+async fn try_connect(addr: SocketAddr, cfg: quinn::ClientConfig, timeout: Duration) -> Result<quinn::Connection> {
+    let bind: SocketAddr = if addr.is_ipv6() { "[::]:0".parse()? } else { "0.0.0.0:0".parse()? };
+    let mut endpoint = quinn::Endpoint::client(bind)?;
+    endpoint.set_default_client_config(cfg);
+    match tokio::time::timeout(timeout, endpoint.connect(addr, "remoteapp")?).await {
+        Err(_) => bail!(
+            "no answer from {addr} within {} s. Is `remoteapp host` running there, and is UDP port {} allowed \
+             by its firewall?",
+            timeout.as_secs(),
+            addr.port()
+        ),
+        Ok(Err(e)) => Err(anyhow::Error::new(e).context("connection failed")),
+        Ok(Ok(c)) => Ok(c),
+    }
+}
+
+/// `remoteapp wake`: sends magic packets until the host answers.
+pub fn wake(query: &str, connect: bool, wait: Duration) -> Result<()> {
+    let dir = tls::config_dir()?;
+    let rec = hosts::find(&dir, query).with_context(|| {
+        format!("unknown host \"{query}\": connect to it once first, so RemoteApp learns how to wake it")
+    })?;
+    let info = rec.wake.clone().with_context(|| {
+        format!("{} did not share its wake details (connect once with an up-to-date RemoteApp)", rec.name)
+    })?;
+    if !info.wired {
+        println!("  Note: {} uses Wi-Fi, which usually cannot wake a sleeping PC.", rec.name);
+    }
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build()?;
+    let awake = rt.block_on(async {
+        let id = tls::load_or_create_identity(&dir)?;
+        let (cfg, _) = tls::client_config(Expect::Pinned(rec.fingerprint.clone()), &id)?;
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut first = true;
+        while tokio::time::Instant::now() < deadline {
+            let sent = crate::wake::send(&info, &[rec.last_addr]).await;
+            if first {
+                println!("  Waking {} ({})...", rec.name, crate::wake::format_mac(&info.mac));
+                for t in &sent {
+                    println!("    magic packet → {t}");
+                }
+                first = false;
+            }
+            // Is it up yet? Try every known address at once.
+            let mut probes = tokio::task::JoinSet::new();
+            for addr in rec.candidates() {
+                let cfg = cfg.clone();
+                probes.spawn(async move { try_connect(addr, cfg, Duration::from_secs(2)).await.map(|c| (addr, c)) });
+            }
+            // Wait for all of them: every connection that succeeded must be
+            // closed properly, or the host keeps its only seat taken.
+            let mut up = None;
+            while let Some(r) = probes.join_next().await {
+                if let Ok(Ok((addr, c))) = r {
+                    c.close(0u32.into(), b"probe");
+                    up.get_or_insert(addr);
+                }
+            }
+            if up.is_some() {
+                // Give the close packets time to leave.
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                return Ok::<_, anyhow::Error>(up);
+            }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        Ok(None)
+    })?;
+    let Some(addr) = awake else {
+        bail!(
+            "{} did not answer within {} s. Is it asleep (not shut down) with `remoteapp host` running? \
+             On the host, `remoteapp wake-setup` checks what is missing.",
+            rec.name,
+            wait.as_secs()
+        );
+    };
+    println!("  {} is awake at {addr}.", rec.name);
+    drop(rt);
+    if connect {
+        std::thread::sleep(Duration::from_millis(500));
+        run(ConnectOptions { host: rec.name, password: None, fingerprint: None, pair: false, prefer: Some(addr) })?;
+    }
+    Ok(())
 }
 
 fn ask(prompt: &str) -> Result<String> {

@@ -6,6 +6,7 @@ mod host;
 mod keymap;
 mod proto;
 mod tls;
+mod wake;
 
 use std::net::IpAddr;
 
@@ -40,6 +41,9 @@ enum Cmd {
         /// Accept only paired devices; password logins are refused.
         #[arg(long)]
         paired_only: bool,
+        /// Do not ask the router (UPnP) to open the port for Internet access.
+        #[arg(long)]
+        no_upnp: bool,
     },
     /// Connect to a PC running `remoteapp host`.
     Connect {
@@ -57,6 +61,27 @@ enum Cmd {
         #[arg(long)]
         pair: bool,
     },
+    /// Wake a sleeping host (one you connected to before) and optionally connect.
+    Wake {
+        /// Host name or address.
+        host: String,
+        /// Open the remote screen once the host is awake.
+        #[arg(long)]
+        connect: bool,
+        /// Give up after this many seconds.
+        #[arg(long, default_value_t = 120)]
+        wait: u64,
+    },
+    /// Check (and with --apply, fix) what this PC needs to be woken remotely.
+    WakeSetup {
+        /// Change the network card settings (needs administrator/root).
+        #[arg(long)]
+        apply: bool,
+        #[arg(long, default_value_t = proto::DEFAULT_PORT)]
+        port: u16,
+    },
+    /// List the hosts this PC has connected to.
+    Hosts,
     /// Show this PC's key fingerprint.
     Fingerprint,
     /// List the devices paired with this host.
@@ -82,12 +107,36 @@ fn main() -> anyhow::Result<()> {
     }
 
     match Cli::parse().cmd {
-        Cmd::Host { port, bind, password, fps, bitrate, paired_only } => {
+        Cmd::Host { port, bind, password, fps, bitrate, paired_only, no_upnp } => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(host::run(host::HostOptions { bind, port, password, fps, bitrate_kbps: bitrate, paired_only }))
+            rt.block_on(host::run(host::HostOptions {
+                bind,
+                port,
+                password,
+                fps,
+                bitrate_kbps: bitrate,
+                paired_only,
+                no_upnp,
+            }))
         }
         Cmd::Connect { host, fingerprint, password, pair } => {
-            client::run(client::ConnectOptions { host, password, fingerprint, pair })
+            client::run(client::ConnectOptions { host, password, fingerprint, pair, prefer: None })
+        }
+        Cmd::Wake { host, connect, wait } => client::wake(&host, connect, std::time::Duration::from_secs(wait)),
+        Cmd::WakeSetup { apply, port } => tokio::runtime::Runtime::new()?.block_on(wake::setup::run(port, apply)),
+        Cmd::Hosts => {
+            let list = client::hosts::load(&tls::config_dir()?);
+            if list.is_empty() {
+                println!("No hosts yet.");
+            }
+            for h in list {
+                let wake = match &h.wake {
+                    Some(w) => format!("wake: {}", wake::format_mac(&w.mac)),
+                    None => "no wake details".into(),
+                };
+                println!("{:<20} {:<24} {}", h.name, h.last_addr, wake);
+            }
+            Ok(())
         }
         Cmd::Devices => {
             let list = devices::list(&tls::config_dir()?);
