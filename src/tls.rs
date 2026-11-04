@@ -23,8 +23,17 @@ use sha2::{Digest, Sha256};
 use crate::proto::ALPN;
 
 pub fn config_dir() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "RemoteApp").context("cannot find a config directory")?;
+    let dirs = directories::ProjectDirs::from("", "", "MagicRemote").context("cannot find a config directory")?;
     let dir = dirs.config_dir().to_path_buf();
+    // Keep keys and paired devices from when the app was called RemoteApp.
+    if !dir.exists()
+        && let Some(old) = directories::ProjectDirs::from("", "", "RemoteApp").map(|d| d.config_dir().to_path_buf())
+            && old.exists() {
+                if let Some(parent) = dir.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::rename(&old, &dir);
+            }
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
     Ok(dir)
 }
@@ -78,7 +87,7 @@ pub fn load_or_create_identity(dir: &Path) -> Result<HostIdentity> {
     let (cert, key) = match (std::fs::read(&cert_path), std::fs::read(&key_path)) {
         (Ok(c), Ok(k)) => (c, k),
         _ => {
-            let ck = rcgen::generate_simple_self_signed(vec!["remoteapp".to_string()])?;
+            let ck = rcgen::generate_simple_self_signed(vec!["magicremote".to_string()])?;
             let cert = ck.cert.der().to_vec();
             let key = ck.signing_key.serialize_der();
             std::fs::write(&cert_path, &cert)?;

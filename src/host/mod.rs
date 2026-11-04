@@ -42,7 +42,7 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     }
 
     println!();
-    println!("  RemoteApp host ready");
+    println!("  Magic Remote host ready");
     println!("  ────────────────────────────────────────────");
     match lan_ip() {
         Some(ip) => println!("  Address:     {ip}  (UDP port {})", opts.port),
@@ -58,7 +58,7 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     println!("  ────────────────────────────────────────────");
     println!("  On the other PC run:");
     println!(
-        "  remoteapp connect {} --fingerprint {} --pair",
+        "  magicremote connect {} --fingerprint {} --pair",
         lan_ip().map(|i| i.to_string()).unwrap_or_else(|| "<this-pc-ip>".into()),
         tls::display_fingerprint(&id.fingerprint)
     );
@@ -84,7 +84,7 @@ pub async fn run(opts: HostOptions) -> Result<()> {
             let public = router.lock().unwrap().public();
             match session(&conn, &opts, &password, public).await {
                 Ok(()) => tracing::info!("{remote} disconnected"),
-                // `remoteapp wake` only checks that we are up.
+                // `magicremote wake` only checks that we are up.
                 Err(_) if is_probe(&conn) => {}
                 Err(e) => tracing::warn!("session with {remote} ended: {e:#}"),
             }
@@ -142,7 +142,7 @@ async fn session(
         if pair {
             devices::pair(&dir, &client_fp, &name)?;
             println!("  ● new device {who} paired and connected");
-            println!("    (remove it with: remoteapp revoke \"{name}\")");
+            println!("    (remove it with: magicremote revoke \"{name}\")");
         } else {
             println!("  ● {who} connected with password");
         }

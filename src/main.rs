@@ -1,4 +1,4 @@
-//! RemoteApp: direct (peer-to-peer) remote desktop between two PCs.
+//! Magic Remote: direct (peer-to-peer) remote desktop between two PCs.
 
 mod client;
 mod devices;
@@ -13,7 +13,7 @@ use std::net::IpAddr;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "remoteapp", version, about = "Direct remote desktop between two PCs, no server in the middle")]
+#[command(name = "magicremote", version, about = "Direct remote desktop between two PCs, no server in the middle")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -30,7 +30,7 @@ enum Cmd {
         #[arg(long, default_value = "0.0.0.0")]
         bind: IpAddr,
         /// Fixed password. Without it a new random one is shown at each start.
-        #[arg(long, env = "REMOTEAPP_PASSWORD")]
+        #[arg(long, env = "MAGICREMOTE_PASSWORD")]
         password: Option<String>,
         /// Frames per second.
         #[arg(long, default_value_t = 30)]
@@ -45,7 +45,7 @@ enum Cmd {
         #[arg(long)]
         no_upnp: bool,
     },
-    /// Connect to a PC running `remoteapp host`.
+    /// Connect to a PC running `magicremote host`.
     Connect {
         /// IP address or name of the host, optionally with `:port`.
         host: String,
@@ -54,7 +54,7 @@ enum Cmd {
         #[arg(long)]
         fingerprint: Option<String>,
         /// Password shown on the host (asked only if needed).
-        #[arg(long, env = "REMOTEAPP_PASSWORD")]
+        #[arg(long, env = "MAGICREMOTE_PASSWORD")]
         password: Option<String>,
         /// Pair this PC with the host: after one login with password, the
         /// host recognises this PC's key and asks no more passwords.
@@ -95,7 +95,7 @@ enum Cmd {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "remoteapp=info,warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "magicremote=info,warn".into()),
         )
         .with_target(false)
         .init();
@@ -151,7 +151,7 @@ fn main() -> anyhow::Result<()> {
         Cmd::Revoke { device } => {
             let gone = devices::revoke(&tls::config_dir()?, &device)?;
             if gone.is_empty() {
-                anyhow::bail!("no paired device matches \"{device}\" (see `remoteapp devices`)");
+                anyhow::bail!("no paired device matches \"{device}\" (see `magicremote devices`)");
             }
             for d in gone {
                 println!("Removed {} ({})", d.name, tls::display_fingerprint(&d.fingerprint));

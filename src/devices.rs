@@ -84,7 +84,7 @@ mod tests {
 
     #[test]
     fn pair_list_revoke() {
-        let dir = std::env::temp_dir().join(format!("remoteapp-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("magicremote-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let a = tls::fingerprint(b"a");
         let b = tls::fingerprint(b"b");
