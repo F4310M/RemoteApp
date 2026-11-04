@@ -1,0 +1,39 @@
+[package]
+name = "remoteapp"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.104"
+bincode = "1"
+clap = { version = "4.6.7", features = ["derive", "env"] }
+directories = "6.0.0"
+enigo = "0.6.1"
+hex = "0.4.3"
+libc = "0.2.191"
+openh264 = "0.9.9"
+quinn = { version = "0.11.12", default-features = false, features = ["log", "runtime-tokio", "rustls-ring"] }
+rand = "0.10.3"
+rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "ring", "pem"] }
+rpassword = "7.5.4"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging"] }
+serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.10"
+softbuffer = "0.4"
+tokio = { version = "1.54.1", features = ["full"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+winit = "0.30"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["shm"] }
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 4
+
+[profile.dev.package."*"]
+opt-level = 2
