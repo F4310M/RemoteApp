@@ -10,7 +10,9 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 directories = "6.0.0"
 enigo = "0.6.1"
 hex = "0.4.3"
+igd-next = { version = "0.18.0", features = ["aio_tokio"] }
 libc = "0.2.191"
+netdev = "0.47.0"
 openh264 = "0.9.9"
 quinn = { version = "0.11.12", default-features = false, features = ["log", "runtime-tokio", "rustls-ring"] }
 rand = "0.10.3"
@@ -18,6 +20,7 @@ rcgen = { version = "0.14.10", default-features = false, features = ["crypto", "
 rpassword = "7.5.4"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "logging"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 sha2 = "0.10"
 softbuffer = "0.4"
 tokio = { version = "1.54.1", features = ["full"] }
