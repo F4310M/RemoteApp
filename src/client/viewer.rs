@@ -56,12 +56,22 @@ struct Placement {
 
 fn placement(win: (usize, usize), pic: (usize, usize)) -> Placement {
     if pic.0 == 0 || pic.1 == 0 || win.0 == 0 || win.1 == 0 {
-        return Placement { x: 0, y: 0, w: 0, h: 0 };
+        return Placement {
+            x: 0,
+            y: 0,
+            w: 0,
+            h: 0,
+        };
     }
     let scale = (win.0 as f64 / pic.0 as f64).min(win.1 as f64 / pic.1 as f64);
     let w = ((pic.0 as f64 * scale).round() as usize).clamp(1, win.0);
     let h = ((pic.1 as f64 * scale).round() as usize).clamp(1, win.1);
-    Placement { x: (win.0 - w) / 2, y: (win.1 - h) / 2, w, h }
+    Placement {
+        x: (win.0 - w) / 2,
+        y: (win.1 - h) / 2,
+        w,
+        h,
+    }
 }
 
 /// Window pixel → host position in 0..=65535 on each axis.
@@ -80,10 +90,19 @@ impl Viewer {
     }
 
     fn current_placement(&self) -> Placement {
-        let Some(w) = &self.window else { return placement((0, 0), (0, 0)) };
+        let Some(w) = &self.window else {
+            return placement((0, 0), (0, 0));
+        };
         let size = w.inner_size();
         let pic = self.session.picture.lock().unwrap();
-        let dims = if pic.width > 0 { (pic.width, pic.height) } else { (self.session.screen.0 as usize, self.session.screen.1 as usize) };
+        let dims = if pic.width > 0 {
+            (pic.width, pic.height)
+        } else {
+            (
+                self.session.screen.0 as usize,
+                self.session.screen.1 as usize,
+            )
+        };
         placement((size.width as usize, size.height as usize), dims)
     }
 
@@ -94,13 +113,20 @@ impl Viewer {
     }
 
     fn draw(&mut self) {
-        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else { return };
+        let (Some(window), Some(surface)) = (&self.window, &mut self.surface) else {
+            return;
+        };
         let size = window.inner_size();
-        let (Some(ww), Some(wh)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) else { return };
+        let (Some(ww), Some(wh)) = (NonZeroU32::new(size.width), NonZeroU32::new(size.height))
+        else {
+            return;
+        };
         if surface.resize(ww, wh).is_err() {
             return;
         }
-        let Ok(mut buf) = surface.buffer_mut() else { return };
+        let Ok(mut buf) = surface.buffer_mut() else {
+            return;
+        };
         let (ww, wh) = (size.width as usize, size.height as usize);
         let pic = self.session.picture.lock().unwrap();
         let p = placement((ww, wh), (pic.width, pic.height));
@@ -128,7 +154,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
             return;
         }
         // Open at the remote size, shrunk to fit a typical screen.
-        let (sw, sh) = (self.session.screen.0.max(1) as f64, self.session.screen.1.max(1) as f64);
+        let (sw, sh) = (
+            self.session.screen.0.max(1) as f64,
+            self.session.screen.1.max(1) as f64,
+        );
         let scale = (1600.0 / sw).min(900.0 / sh).min(1.0);
         let attrs = Window::default_attributes()
             .with_title(format!("Magic Remote: {}", self.session.host_name))
@@ -140,7 +169,8 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 return event_loop.exit();
             }
         };
-        let surface = softbuffer::Context::new(window.clone()).and_then(|ctx| Surface::new(&ctx, window.clone()));
+        let surface = softbuffer::Context::new(window.clone())
+            .and_then(|ctx| Surface::new(&ctx, window.clone()));
         match surface {
             Ok(s) => self.surface = Some(s),
             Err(e) => {
@@ -193,7 +223,10 @@ impl ApplicationHandler<UiEvent> for Viewer {
                     winit::event::MouseButton::Forward => MouseButton::Forward,
                     _ => return,
                 };
-                self.send(InputEvent::MouseButton { button, down: state == ElementState::Pressed });
+                self.send(InputEvent::MouseButton {
+                    button,
+                    down: state == ElementState::Pressed,
+                });
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let (dx, dy) = match delta {
@@ -207,15 +240,26 @@ impl ApplicationHandler<UiEvent> for Viewer {
                 self.scroll_acc.1 -= sy;
                 if sx != 0.0 || sy != 0.0 {
                     // winit: positive y = wheel away from you = scroll up.
-                    self.send(InputEvent::Scroll { dx: sx as i32, dy: -sy as i32 });
+                    self.send(InputEvent::Scroll {
+                        dx: sx as i32,
+                        dy: -sy as i32,
+                    });
                 }
             }
-            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic,
+                ..
+            } => {
                 if is_synthetic {
                     return;
                 }
-                let PhysicalKey::Code(code) = event.physical_key else { return };
-                let Some(code) = crate::keymap::from_winit(code) else { return };
+                let PhysicalKey::Code(code) = event.physical_key else {
+                    return;
+                };
+                let Some(code) = crate::keymap::from_winit(code) else {
+                    return;
+                };
                 let down = event.state == ElementState::Pressed;
                 if down {
                     self.held_keys.insert(code);
@@ -237,10 +281,27 @@ mod tests {
     fn letterbox_and_mapping() {
         // 16:9 picture in a square window: bars top and bottom.
         let p = placement((1000, 1000), (1920, 1080));
-        assert_eq!(p, Placement { x: 0, y: 218, w: 1000, h: 563 });
-        assert_eq!(to_remote(p, PhysicalPosition::new(0.0, 218.0)), Some((0, 0)));
-        assert_eq!(to_remote(p, PhysicalPosition::new(1000.0, 781.0)), Some((65535, 65535)));
+        assert_eq!(
+            p,
+            Placement {
+                x: 0,
+                y: 218,
+                w: 1000,
+                h: 563
+            }
+        );
+        assert_eq!(
+            to_remote(p, PhysicalPosition::new(0.0, 218.0)),
+            Some((0, 0))
+        );
+        assert_eq!(
+            to_remote(p, PhysicalPosition::new(1000.0, 781.0)),
+            Some((65535, 65535))
+        );
         // Clicks on the bars clamp to the edge.
-        assert_eq!(to_remote(p, PhysicalPosition::new(500.0, 0.0)).unwrap().1, 0);
+        assert_eq!(
+            to_remote(p, PhysicalPosition::new(500.0, 0.0)).unwrap().1,
+            0
+        );
     }
 }

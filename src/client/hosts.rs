@@ -35,12 +35,18 @@ impl HostRecord {
 const FILE: &str = "hosts.json";
 
 pub fn load(dir: &Path) -> Vec<HostRecord> {
-    std::fs::read(dir.join(FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(dir.join(FILE))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 /// Adds or replaces the record with the same fingerprint.
 pub fn save(dir: &Path, rec: HostRecord) -> Result<()> {
-    let mut all: Vec<HostRecord> = load(dir).into_iter().filter(|r| r.fingerprint != rec.fingerprint).collect();
+    let mut all: Vec<HostRecord> = load(dir)
+        .into_iter()
+        .filter(|r| r.fingerprint != rec.fingerprint)
+        .collect();
     all.push(rec);
     std::fs::write(dir.join(FILE), serde_json::to_vec_pretty(&all)?)?;
     Ok(())
@@ -49,7 +55,9 @@ pub fn save(dir: &Path, rec: HostRecord) -> Result<()> {
 /// Finds a host by its name (any case) or by its last address.
 pub fn find(dir: &Path, query: &str) -> Option<HostRecord> {
     let all = load(dir);
-    let by_name = all.iter().find(|r| r.name.eq_ignore_ascii_case(query.trim()));
+    let by_name = all
+        .iter()
+        .find(|r| r.name.eq_ignore_ascii_case(query.trim()));
     let by_addr = || {
         let q = super::with_default_port(query);
         all.iter().find(|r| r.last_addr.to_string() == q)
@@ -75,9 +83,19 @@ mod tests {
         assert!(find(&dir, "casa").is_some());
         assert!(find(&dir, "192.168.1.5").is_some());
         assert!(find(&dir, "ufficio").is_none());
-        save(&dir, HostRecord { last_addr: "10.0.0.2:47800".parse().unwrap(), ..r }).unwrap();
+        save(
+            &dir,
+            HostRecord {
+                last_addr: "10.0.0.2:47800".parse().unwrap(),
+                ..r
+            },
+        )
+        .unwrap();
         assert_eq!(load(&dir).len(), 1);
-        assert_eq!(find(&dir, "casa").unwrap().last_addr.to_string(), "10.0.0.2:47800");
+        assert_eq!(
+            find(&dir, "casa").unwrap().last_addr.to_string(),
+            "10.0.0.2:47800"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

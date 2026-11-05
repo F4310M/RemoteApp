@@ -2,7 +2,10 @@
 
 use anyhow::Result;
 use openh264::OpenH264API;
-use openh264::encoder::{BitRate, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, RateControlMode, UsageType};
+use openh264::encoder::{
+    BitRate, Encoder, EncoderConfig, FrameRate, FrameType, IntraFramePeriod, RateControlMode,
+    UsageType,
+};
 use openh264::formats::{BgraSliceU8, YUVBuffer};
 
 use super::capture::Frame;
@@ -35,7 +38,11 @@ impl VideoEncoder {
             // A fresh keyframe every 10 s caps how long a glitch can last.
             .intra_frame_period(IntraFramePeriod::from_num_frames(fps * 10));
         let enc = Encoder::with_api_config(OpenH264API::from_source(), cfg)?;
-        Ok(VideoEncoder { enc, yuv: None, resized: Vec::new() })
+        Ok(VideoEncoder {
+            enc,
+            yuv: None,
+            resized: Vec::new(),
+        })
     }
 
     pub fn force_keyframe(&mut self) {
@@ -45,7 +52,9 @@ impl VideoEncoder {
     pub fn encode(&mut self, frame: &Frame) -> Result<Option<Encoded>> {
         // The encoder wants even dimensions within its limits: shrink by an
         // integer factor if the screen is too big, then drop an odd edge.
-        let factor = (frame.width.div_ceil(MAX_W)).max(frame.height.div_ceil(MAX_H)).max(1);
+        let factor = (frame.width.div_ceil(MAX_W))
+            .max(frame.height.div_ceil(MAX_H))
+            .max(1);
         let w = (frame.width / factor) & !1;
         let h = (frame.height / factor) & !1;
         if w == 0 || h == 0 {
@@ -62,7 +71,8 @@ impl VideoEncoder {
                     dst_row.copy_from_slice(&src_row[..w * 4]);
                 } else {
                     for x in 0..w {
-                        dst_row[x * 4..x * 4 + 4].copy_from_slice(&src_row[x * factor * 4..x * factor * 4 + 4]);
+                        dst_row[x * 4..x * 4 + 4]
+                            .copy_from_slice(&src_row[x * factor * 4..x * factor * 4 + 4]);
                     }
                 }
             }
@@ -83,7 +93,12 @@ impl VideoEncoder {
         if data.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Encoded { width: w as u32, height: h as u32, keyframe, data }))
+        Ok(Some(Encoded {
+            width: w as u32,
+            height: h as u32,
+            keyframe,
+            data,
+        }))
     }
 }
 

@@ -28,13 +28,20 @@ pub fn list(dir: &Path) -> Vec<Device> {
             let fingerprint = parts.next()?.trim().to_string();
             let added = parts.next()?.trim().parse().ok()?;
             let name = parts.next().unwrap_or("").to_string();
-            (fingerprint.len() == 64).then_some(Device { fingerprint, added, name })
+            (fingerprint.len() == 64).then_some(Device {
+                fingerprint,
+                added,
+                name,
+            })
         })
         .collect()
 }
 
 fn save(dir: &Path, devices: &[Device]) -> Result<()> {
-    let text: String = devices.iter().map(|d| format!("{}\t{}\t{}\n", d.fingerprint, d.added, clean(&d.name))).collect();
+    let text: String = devices
+        .iter()
+        .map(|d| format!("{}\t{}\t{}\n", d.fingerprint, d.added, clean(&d.name)))
+        .collect();
     std::fs::write(dir.join(FILE), text)?;
     Ok(())
 }
@@ -42,7 +49,11 @@ fn save(dir: &Path, devices: &[Device]) -> Result<()> {
 /// Names come from the other PC: keep them printable and on one line.
 pub fn clean(name: &str) -> String {
     let s: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
-    if s.trim().is_empty() { "unnamed".into() } else { s }
+    if s.trim().is_empty() {
+        "unnamed".into()
+    } else {
+        s
+    }
 }
 
 pub fn is_paired(dir: &Path, fingerprint: &str) -> bool {
@@ -50,9 +61,19 @@ pub fn is_paired(dir: &Path, fingerprint: &str) -> bool {
 }
 
 pub fn pair(dir: &Path, fingerprint: &str, name: &str) -> Result<()> {
-    let mut devices: Vec<Device> = list(dir).into_iter().filter(|d| d.fingerprint != fingerprint).collect();
-    let added = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    devices.push(Device { fingerprint: fingerprint.to_string(), added, name: clean(name) });
+    let mut devices: Vec<Device> = list(dir)
+        .into_iter()
+        .filter(|d| d.fingerprint != fingerprint)
+        .collect();
+    let added = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    devices.push(Device {
+        fingerprint: fingerprint.to_string(),
+        added,
+        name: clean(name),
+    });
     save(dir, &devices)
 }
 
@@ -60,7 +81,8 @@ pub fn pair(dir: &Path, fingerprint: &str, name: &str) -> Result<()> {
 /// with it (any separators). Returns what was removed.
 pub fn revoke(dir: &Path, query: &str) -> Result<Vec<Device>> {
     let (gone, kept): (Vec<Device>, Vec<Device>) = list(dir).into_iter().partition(|d| {
-        d.name.eq_ignore_ascii_case(query.trim()) || (tls::fingerprint_matches_prefix(query, &d.fingerprint))
+        d.name.eq_ignore_ascii_case(query.trim())
+            || (tls::fingerprint_matches_prefix(query, &d.fingerprint))
     });
     if !gone.is_empty() {
         save(dir, &kept)?;
@@ -73,7 +95,11 @@ pub fn this_device_name() -> String {
     std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .ok()
-        .or_else(|| std::fs::read_to_string("/etc/hostname").ok().map(|s| s.trim().to_string()))
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|s| s.trim().to_string())
+        })
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "pc".into())
 }
@@ -96,7 +122,12 @@ mod tests {
         assert!(is_paired(&dir, &a) && is_paired(&dir, &b));
         assert_eq!(revoke(&dir, "OFFICE").unwrap().len(), 1);
         assert!(!is_paired(&dir, &b));
-        assert_eq!(revoke(&dir, &tls::display_fingerprint(&a)[..9]).unwrap().len(), 1);
+        assert_eq!(
+            revoke(&dir, &tls::display_fingerprint(&a)[..9])
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(list(&dir).is_empty());
         std::fs::remove_dir_all(&dir).unwrap();
     }

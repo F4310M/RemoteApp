@@ -40,13 +40,20 @@ impl WakeInfo {
         if let Some(p) = self.public {
             v.push(p);
         }
-        v.extend(self.ipv6.iter().map(|ip| SocketAddr::new((*ip).into(), self.port)));
+        v.extend(
+            self.ipv6
+                .iter()
+                .map(|ip| SocketAddr::new((*ip).into(), self.port)),
+        );
         v
     }
 }
 
 pub fn format_mac(mac: &[u8; 6]) -> String {
-    mac.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(":")
+    mac.iter()
+        .map(|b| format!("{b:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 /// 6 × 0xFF followed by the MAC repeated 16 times.
@@ -82,7 +89,12 @@ pub fn local_info(port: u16, public: Option<SocketAddr>) -> Option<WakeInfo> {
         lan_ip: v4.map(|n| n.addr()),
         lan_broadcast: v4.map(|n| n.broadcast()),
         public,
-        ipv6: iface.ipv6.iter().map(|n| n.addr()).filter(is_global_v6).collect(),
+        ipv6: iface
+            .ipv6
+            .iter()
+            .map(|n| n.addr())
+            .filter(is_global_v6)
+            .collect(),
     })
 }
 
@@ -94,7 +106,11 @@ pub fn is_global_v6(ip: &Ipv6Addr) -> bool {
 /// Private, CGNAT (100.64/10) or otherwise not reachable from the Internet.
 pub fn is_private_v4(ip: &Ipv4Addr) -> bool {
     let o = ip.octets();
-    ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || (o[0] == 100 && (o[1] & 0xC0) == 64)
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || (o[0] == 100 && (o[1] & 0xC0) == 64)
 }
 
 /// Sends the magic packet to every address that might reach the host.
@@ -121,9 +137,10 @@ pub async fn send(info: &WakeInfo, extra: &[SocketAddr]) -> Vec<SocketAddr> {
             IpAddr::V6(_) => v6.as_ref(),
         };
         if let Some(s) = sock
-            && s.send_to(&packet, t).await.is_ok() {
-                sent.push(t);
-            }
+            && s.send_to(&packet, t).await.is_ok()
+        {
+            sent.push(t);
+        }
     }
     sent
 }

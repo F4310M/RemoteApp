@@ -23,17 +23,20 @@ use sha2::{Digest, Sha256};
 use crate::proto::ALPN;
 
 pub fn config_dir() -> Result<PathBuf> {
-    let dirs = directories::ProjectDirs::from("", "", "MagicRemote").context("cannot find a config directory")?;
+    let dirs = directories::ProjectDirs::from("", "", "MagicRemote")
+        .context("cannot find a config directory")?;
     let dir = dirs.config_dir().to_path_buf();
     // Keep keys and paired devices from when the app was called RemoteApp.
     if !dir.exists()
-        && let Some(old) = directories::ProjectDirs::from("", "", "RemoteApp").map(|d| d.config_dir().to_path_buf())
-            && old.exists() {
-                if let Some(parent) = dir.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::rename(&old, &dir);
-            }
+        && let Some(old) = directories::ProjectDirs::from("", "", "RemoteApp")
+            .map(|d| d.config_dir().to_path_buf())
+        && old.exists()
+    {
+        if let Some(parent) = dir.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::rename(&old, &dir);
+    }
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
     Ok(dir)
 }
@@ -59,7 +62,10 @@ pub fn display_fingerprint(full: &str) -> String {
 }
 
 fn normalize(fp: &str) -> String {
-    fp.chars().filter(|c| c.is_ascii_hexdigit()).collect::<String>().to_lowercase()
+    fp.chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 /// True if `typed` (short or full form, any separators) identifies `full`.
@@ -107,7 +113,12 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     {
         use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
         f.write_all(data)?;
     }
     #[cfg(not(unix))]
@@ -118,7 +129,9 @@ fn write_private(path: &Path, data: &[u8]) -> Result<()> {
 pub fn server_config(id: &HostIdentity) -> Result<quinn::ServerConfig> {
     let mut tls = rustls::ServerConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
-        .with_client_cert_verifier(Arc::new(AnyClientKey { provider: provider() }))
+        .with_client_cert_verifier(Arc::new(AnyClientKey {
+            provider: provider(),
+        }))
         .with_single_cert(vec![id.cert.clone()], id.key.clone_key())?;
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
@@ -137,9 +150,16 @@ pub enum Expect {
     FirstUse,
 }
 
-pub fn client_config(expect: Expect, id: &HostIdentity) -> Result<(quinn::ClientConfig, Arc<Mutex<Option<String>>>)> {
+pub fn client_config(
+    expect: Expect,
+    id: &HostIdentity,
+) -> Result<(quinn::ClientConfig, Arc<Mutex<Option<String>>>)> {
     let seen = Arc::new(Mutex::new(None));
-    let verifier = Arc::new(FingerprintVerifier { expect, seen: seen.clone(), provider: provider() });
+    let verifier = Arc::new(FingerprintVerifier {
+        expect,
+        seen: seen.clone(),
+        provider: provider(),
+    });
     let mut tls = rustls::ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
@@ -182,10 +202,12 @@ impl ServerCertVerifier for FingerprintVerifier {
         let fp = fingerprint(end_entity);
         *self.seen.lock().unwrap() = Some(fp.clone());
         match &self.expect {
-            Expect::Pinned(want) if !fingerprint_matches(want, &fp) => Err(rustls::Error::General(format!(
-                "host fingerprint {} does not match the expected one",
-                display_fingerprint(&fp)
-            ))),
+            Expect::Pinned(want) if !fingerprint_matches(want, &fp) => {
+                Err(rustls::Error::General(format!(
+                    "host fingerprint {} does not match the expected one",
+                    display_fingerprint(&fp)
+                )))
+            }
             _ => Ok(ServerCertVerified::assertion()),
         }
     }
@@ -205,11 +227,18 @@ impl ServerCertVerifier for FingerprintVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -250,17 +279,27 @@ impl ClientCertVerifier for AnyClientKey {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss, &self.provider.signature_verification_algorithms)
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        self.provider.signature_verification_algorithms.supported_schemes()
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
 /// Fingerprint of the key the other side presented in the handshake.
 pub fn peer_fingerprint(conn: &quinn::Connection) -> Option<String> {
-    let certs = conn.peer_identity()?.downcast::<Vec<CertificateDer<'static>>>().ok()?;
+    let certs = conn
+        .peer_identity()?
+        .downcast::<Vec<CertificateDer<'static>>>()
+        .ok()?;
     certs.first().map(|c| fingerprint(c))
 }
 
@@ -276,8 +315,11 @@ pub fn known_host(dir: &Path, addr: &str) -> Option<String> {
 pub fn remember_host(dir: &Path, addr: &str, fp: &str) -> Result<()> {
     let path = dir.join("known_hosts");
     let old = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut lines: Vec<String> =
-        old.lines().filter(|l| l.split_once(' ').map(|(a, _)| a) != Some(addr)).map(String::from).collect();
+    let mut lines: Vec<String> = old
+        .lines()
+        .filter(|l| l.split_once(' ').map(|(a, _)| a) != Some(addr))
+        .map(String::from)
+        .collect();
     lines.push(format!("{addr} {fp}"));
     std::fs::write(path, lines.join("\n") + "\n")?;
     Ok(())
@@ -293,9 +335,15 @@ mod tests {
         let short = display_fingerprint(&full);
         assert_eq!(short.len(), 39);
         assert!(fingerprint_matches(&short, &full));
-        assert!(fingerprint_matches(&short.to_lowercase().replace('-', " "), &full));
+        assert!(fingerprint_matches(
+            &short.to_lowercase().replace('-', " "),
+            &full
+        ));
         assert!(fingerprint_matches(&full, &full));
         assert!(!fingerprint_matches(&short[..20], &full));
-        assert!(!fingerprint_matches(&display_fingerprint(&fingerprint(b"other")), &full));
+        assert!(!fingerprint_matches(
+            &display_fingerprint(&fingerprint(b"other")),
+            &full
+        ));
     }
 }

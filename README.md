@@ -6,6 +6,18 @@ Desktop remoto **diretto** tra due PC Windows e Linux: nessun server nel mezzo, 
 
 ## Come si usa
 
+### Con la finestra (consigliato)
+
+Fai doppio clic su `magicremote` (su Windows `magicremote.exe`). Si apre la finestra con tre schede:
+
+- **I miei PC**: i PC che hai già usato, con un pallino verde se sono accesi. "Connetti" apre lo schermo remoto, "Sveglia e connetti" prima li accende. "+ Aggiungi PC" chiede indirizzo, impronta e password (con l'opzione di abbinarlo).
+- **Condividi questo PC**: "Avvia condivisione" mostra indirizzo, impronta e password da dare all'altro PC, chi è collegato ora e i PC abbinati (con "Revoca").
+- **Risveglio**: controlla se questo PC si può accendere da remoto e, con "Correggi impostazioni", sistema la scheda di rete (chiede i permessi da amministratore).
+
+**Lingue:** italiano, inglese, tedesco, spagnolo, francese, russo, cinese e giapponese. All'avvio usa la lingua del sistema; si cambia dal menu in alto a destra e la scelta viene ricordata.
+
+### Da riga di comando
+
 Sul PC da controllare:
 
 ```
@@ -138,6 +150,7 @@ Codice in `src/`: `proto.rs` (protocollo), `tls.rs` (identità e cifratura), `ke
 - Linux: tutto il desktop X11 (tutti i monitor insieme).
 - Codifica solo software: con schermi 4K e scene molto animate la CPU lavora parecchio.
 - Niente audio, appunti condivisi o trasferimento file.
+- Nella finestra, i dettagli tecnici del controllo risveglio e il registro attività sono ancora in inglese.
 
 ## Prossimi passi
 
@@ -146,4 +159,4 @@ Codice in `src/`: `proto.rs` (protocollo), `tls.rs` (identità e cifratura), `ke
 3. Collegamento via Internet: STUN/ICE e hole punching, codice di connessione.
 4. Codifica hardware (NVENC, QuickSync, VAAPI).
 5. Wayland (PipeWire + portal, libei).
-6. Scelta del monitor, appunti condivisi, audio, interfaccia grafica.
+6. Scelta del monitor, appunti condivisi, audio.

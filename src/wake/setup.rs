@@ -40,8 +40,13 @@ impl Router {
             Router::Cgnat(ip) => format!(
                 "not reachable: the router's Internet address {ip} is private (carrier-grade NAT or double router)"
             ),
-            Router::NoUpnp => "not reachable: no router answered UPnP (enable UPnP or open the port by hand)".into(),
-            Router::Failed(e) => format!("not reachable: the router refused to open the port ({e})"),
+            Router::NoUpnp => {
+                "not reachable: no router answered UPnP (enable UPnP or open the port by hand)"
+                    .into()
+            }
+            Router::Failed(e) => {
+                format!("not reachable: the router refused to open the port ({e})")
+            }
             Router::Disabled => "UPnP disabled (--no-upnp)".into(),
         }
     }
@@ -64,14 +69,24 @@ pub async fn open_router_port(port: u16) -> Router {
         Err(e) => return Router::Failed(e.to_string()),
     };
     if let IpAddr::V4(v4) = external
-        && is_private_v4(&v4) {
-            return Router::Cgnat(external);
-        }
+        && is_private_v4(&v4)
+    {
+        return Router::Cgnat(external);
+    }
     let target = SocketAddr::new(local.into(), port);
     let mut last_err = String::new();
     // 0 = permanent; some routers only accept a finite lease.
     for lease in [0u32, 7 * 24 * 3600, 24 * 3600] {
-        match gw.add_port(PortMappingProtocol::UDP, port, target, lease, "Magic Remote").await {
+        match gw
+            .add_port(
+                PortMappingProtocol::UDP,
+                port,
+                target,
+                lease,
+                "Magic Remote",
+            )
+            .await
+        {
             Ok(()) => return Router::Mapped(SocketAddr::new(external, port)),
             Err(e) => last_err = e.to_string(),
         }
@@ -98,21 +113,49 @@ pub struct Check {
 }
 
 fn check(ok: Option<bool>, text: impl Into<String>) -> Check {
-    Check { ok, text: text.into() }
+    Check {
+        ok,
+        text: text.into(),
+    }
 }
 
-/// `magicremote wake-setup`: checks (and with `apply`, fixes) everything
-/// needed to wake this PC from standby, and prints the verdict.
-pub async fn run(port: u16, apply: bool) -> anyhow::Result<()> {
+/// Overall answer of the diagnosis.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Verdict {
+    /// Can be woken from the Internet.
+    Internet,
+    /// Can be woken only from the local network.
+    LanOnly,
+    /// The network card is not set up (or cannot wake the PC).
+    NotReady,
+}
+
+pub struct Report {
+    pub checks: Vec<Check>,
+    pub verdict: Verdict,
+}
+
+/// Checks (and with `apply`, fixes) everything needed to wake this PC
+/// from standby.
+pub async fn diagnose(port: u16, apply: bool) -> anyhow::Result<Report> {
     let mut checks = Vec::new();
     let Some(iface) = default_interface() else {
         anyhow::bail!("cannot find the network card used for the Internet");
     };
-    let name = iface.friendly_name.clone().unwrap_or_else(|| iface.name.clone());
+    let name = iface
+        .friendly_name
+        .clone()
+        .unwrap_or_else(|| iface.name.clone());
     let mac = iface.mac_addr.map(|m| m.octets()).filter(|m| *m != [0; 6]);
     match mac {
-        Some(m) => checks.push(check(Some(true), format!("Network card: {name} ({})", format_mac(&m)))),
-        None => checks.push(check(Some(false), format!("Network card {name} has no MAC address"))),
+        Some(m) => checks.push(check(
+            Some(true),
+            format!("Network card: {name} ({})", format_mac(&m)),
+        )),
+        None => checks.push(check(
+            Some(false),
+            format!("Network card {name} has no MAC address"),
+        )),
     }
     if is_wireless(&iface) {
         checks.push(check(
@@ -122,12 +165,20 @@ pub async fn run(port: u16, apply: bool) -> anyhow::Result<()> {
     } else {
         checks.push(check(Some(true), "Wired connection"));
     }
-
     checks.extend(nic_wake(&iface, apply));
+    let card_ok = checks.iter().all(|c| c.ok != Some(false));
 
     let router = open_router_port(port).await;
-    checks.push(check(Some(router.public().is_some()), format!("From the Internet (IPv4): {}", router.describe())));
-    let v6: Vec<_> = iface.ipv6.iter().map(|n| n.addr()).filter(is_global_v6).collect();
+    checks.push(check(
+        Some(router.public().is_some()),
+        format!("From the Internet (IPv4): {}", router.describe()),
+    ));
+    let v6: Vec<_> = iface
+        .ipv6
+        .iter()
+        .map(|n| n.addr())
+        .filter(is_global_v6)
+        .collect();
     if v6.is_empty() {
         checks.push(check(None, "IPv6: no public address"));
     } else {
@@ -135,13 +186,26 @@ pub async fn run(port: u16, apply: bool) -> anyhow::Result<()> {
             None,
             format!(
                 "IPv6: {} (reachable only if the router's IPv6 firewall lets UDP {port} in)",
-                v6.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(", ")
+                v6.iter()
+                    .map(|a| a.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
         ));
     }
+    let verdict = match (card_ok, router.public().is_some() || !v6.is_empty()) {
+        (true, true) => Verdict::Internet,
+        (true, false) => Verdict::LanOnly,
+        (false, _) => Verdict::NotReady,
+    };
+    Ok(Report { checks, verdict })
+}
 
+/// `magicremote wake-setup`: prints the diagnosis.
+pub async fn run(port: u16, apply: bool) -> anyhow::Result<()> {
+    let report = diagnose(port, apply).await?;
     println!();
-    for c in &checks {
+    for c in &report.checks {
         let mark = match c.ok {
             Some(true) => "✓",
             Some(false) => "✗",
@@ -150,28 +214,35 @@ pub async fn run(port: u16, apply: bool) -> anyhow::Result<()> {
         println!("  {mark} {}", c.text);
     }
     println!();
-    let card_ok = checks.iter().take_while(|c| !c.text.starts_with("From the Internet")).all(|c| c.ok != Some(false));
-    match (card_ok, router.public().is_some() || !v6.is_empty()) {
-        (true, true) => {
+    match report.verdict {
+        Verdict::Internet => {
             println!("  This PC can be woken from the Internet.");
             println!("  Keep `magicremote host` running and put the PC to SLEEP (not shut down).");
-            println!("  To try it: put it to sleep, then on the other PC run `magicremote wake <name>`.");
+            println!(
+                "  To try it: put it to sleep, then on the other PC run `magicremote wake <name>`."
+            );
         }
-        (true, false) => {
+        Verdict::LanOnly => {
             println!("  This PC can be woken from the local network, but not from the Internet.");
             println!("  Fix the item above, or use another always-on device at home to wake it.");
         }
-        (false, _) if !apply => {
-            println!("  Not ready. Run `magicremote wake-setup --apply` as administrator/root to fix the card settings.");
+        Verdict::NotReady if !apply => {
+            println!(
+                "  Not ready. Run `magicremote wake-setup --apply` as administrator/root to fix the card settings."
+            );
         }
-        (false, _) => println!("  Not ready: see the items marked ✗."),
+        Verdict::NotReady => println!("  Not ready: see the items marked ✗."),
     }
     Ok(())
 }
 
 #[cfg(windows)]
 fn nic_wake(iface: &netdev::Interface, apply: bool) -> Vec<Check> {
-    let name = iface.friendly_name.clone().unwrap_or_else(|| iface.name.clone()).replace('\'', "''");
+    let name = iface
+        .friendly_name
+        .clone()
+        .unwrap_or_else(|| iface.name.clone())
+        .replace('\'', "''");
     let ps = |cmd: &str| {
         Command::new("powershell")
             .args(["-NoProfile", "-NonInteractive", "-Command", cmd])
@@ -186,10 +257,15 @@ fn nic_wake(iface: &netdev::Interface, apply: bool) -> Vec<Check> {
             "Set-NetAdapterPowerManagement -Name '{name}' -WakeOnMagicPacket Enabled -ArpOffload Enabled -NSOffload Enabled -ErrorAction Stop"
         );
         if ps(&set).is_none() {
-            out.push(check(Some(false), "Could not change the card settings: run as administrator"));
+            out.push(check(
+                Some(false),
+                "Could not change the card settings: run as administrator",
+            ));
         }
         if let Some(desc) = &iface.description {
-            let _ = Command::new("powercfg").args(["/deviceenablewake", desc]).output();
+            let _ = Command::new("powercfg")
+                .args(["/deviceenablewake", desc])
+                .output();
         }
     }
     let get = format!(
@@ -199,10 +275,16 @@ fn nic_wake(iface: &netdev::Interface, apply: bool) -> Vec<Check> {
         Some(s) => {
             let v: Vec<&str> = s.split('|').collect();
             let on = |i: usize| v.get(i).map(|x| x.eq_ignore_ascii_case("Enabled"));
-            out.push(check(on(0), format!("Wake on magic packet: {}", v.first().unwrap_or(&"?"))));
+            out.push(check(
+                on(0),
+                format!("Wake on magic packet: {}", v.first().unwrap_or(&"?")),
+            ));
             out.push(check(
                 on(1),
-                format!("ARP offload (keeps the router aware of the sleeping PC): {}", v.get(1).unwrap_or(&"?")),
+                format!(
+                    "ARP offload (keeps the router aware of the sleeping PC): {}",
+                    v.get(1).unwrap_or(&"?")
+                ),
             ));
         }
         None => out.push(check(None, "Could not read the card's power settings")),
@@ -213,7 +295,10 @@ fn nic_wake(iface: &netdev::Interface, apply: bool) -> Vec<Check> {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).to_string());
     if let (Some(armed), Some(desc)) = (armed, &iface.description) {
-        out.push(check(Some(armed.contains(desc.as_str())), "Windows allows this card to wake the PC"));
+        out.push(check(
+            Some(armed.contains(desc.as_str())),
+            "Windows allows this card to wake the PC",
+        ));
     }
     out
 }
@@ -223,19 +308,36 @@ fn nic_wake(iface: &netdev::Interface, apply: bool) -> Vec<Check> {
     let dev = iface.name.clone();
     let mut out = Vec::new();
     if apply {
-        let ok = Command::new("ethtool").args(["-s", &dev, "wol", "g"]).status().map(|s| s.success()).unwrap_or(false);
+        let ok = Command::new("ethtool")
+            .args(["-s", &dev, "wol", "g"])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
         if !ok {
-            out.push(check(Some(false), "Could not enable Wake-on-LAN: run with sudo (and install ethtool)"));
+            out.push(check(
+                Some(false),
+                "Could not enable Wake-on-LAN: run with sudo (and install ethtool)",
+            ));
         }
         // Make it survive reboots when NetworkManager manages the card.
-        if let Ok(o) = Command::new("nmcli").args(["-t", "-f", "NAME,DEVICE", "connection", "show", "--active"]).output() {
+        if let Ok(o) = Command::new("nmcli")
+            .args(["-t", "-f", "NAME,DEVICE", "connection", "show", "--active"])
+            .output()
+        {
             for line in String::from_utf8_lossy(&o.stdout).lines() {
                 if let Some((conn, d)) = line.rsplit_once(':')
-                    && d == dev {
-                        let _ = Command::new("nmcli")
-                            .args(["connection", "modify", conn, "802-3-ethernet.wake-on-lan", "magic"])
-                            .status();
-                    }
+                    && d == dev
+                {
+                    let _ = Command::new("nmcli")
+                        .args([
+                            "connection",
+                            "modify",
+                            conn,
+                            "802-3-ethernet.wake-on-lan",
+                            "magic",
+                        ])
+                        .status();
+                }
             }
         }
     }
@@ -243,17 +345,27 @@ fn nic_wake(iface: &netdev::Interface, apply: bool) -> Vec<Check> {
         Ok(o) if o.status.success() => {
             let text = String::from_utf8_lossy(&o.stdout);
             let field = |key: &str| {
-                text.lines().find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
+                text.lines()
+                    .find_map(|l| l.trim().strip_prefix(key).map(|v| v.trim().to_string()))
             };
             let supports = field("Supports Wake-on:").unwrap_or_default();
             let current = field("Wake-on:").unwrap_or_default();
             if !supports.contains('g') {
-                out.push(check(Some(false), format!("The card does not support Wake-on-LAN (supports: '{supports}')")));
+                out.push(check(
+                    Some(false),
+                    format!("The card does not support Wake-on-LAN (supports: '{supports}')"),
+                ));
             } else {
-                out.push(check(Some(current.contains('g')), format!("Wake on magic packet: '{current}' (needs 'g')")));
+                out.push(check(
+                    Some(current.contains('g')),
+                    format!("Wake on magic packet: '{current}' (needs 'g')"),
+                ));
             }
         }
-        _ => out.push(check(None, "Install `ethtool` to check the card's Wake-on-LAN setting")),
+        _ => out.push(check(
+            None,
+            "Install `ethtool` to check the card's Wake-on-LAN setting",
+        )),
     }
     out.push(check(
         None,
@@ -265,5 +377,8 @@ fn nic_wake(iface: &netdev::Interface, apply: bool) -> Vec<Check> {
 
 #[cfg(not(any(windows, target_os = "linux")))]
 fn nic_wake(_iface: &netdev::Interface, _apply: bool) -> Vec<Check> {
-    vec![check(None, "Network card settings are not checked on this system")]
+    vec![check(
+        None,
+        "Network card settings are not checked on this system",
+    )]
 }
