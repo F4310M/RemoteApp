@@ -64,26 +64,44 @@ mod x11 {
 
     impl X11Capturer {
         pub fn new() -> Result<Self> {
-            let (conn, screen_num) = x11rb::connect(None).context("cannot connect to the X server (is DISPLAY set?)")?;
+            let (conn, screen_num) =
+                x11rb::connect(None).context("cannot connect to the X server (is DISPLAY set?)")?;
             let screen = &conn.setup().roots[screen_num];
             let root = screen.root;
             let depth = screen.root_depth;
-            let bpp = conn.setup().pixmap_formats.iter().find(|f| f.depth == depth).map(|f| f.bits_per_pixel);
+            let bpp = conn
+                .setup()
+                .pixmap_formats
+                .iter()
+                .find(|f| f.depth == depth)
+                .map(|f| f.bits_per_pixel);
             if bpp != Some(32) {
                 bail!("unsupported X11 pixel format (depth {depth}, {bpp:?} bits per pixel)");
             }
-            let shm_ok = conn.shm_query_version().ok().and_then(|c| c.reply().ok()).is_some();
+            let shm_ok = conn
+                .shm_query_version()
+                .ok()
+                .and_then(|c| c.reply().ok())
+                .is_some();
             if !shm_ok {
                 tracing::warn!("X11 MIT-SHM not available, capture will be slower");
             }
-            let mut c = X11Capturer { conn, root, shm: None };
+            let mut c = X11Capturer {
+                conn,
+                root,
+                shm: None,
+            };
             if !shm_ok {
                 c.shm = None;
                 return Ok(c);
             }
             // Mark SHM as wanted by allocating a 0-size placeholder; real
             // allocation happens on first capture once the size is known.
-            c.shm = Some(Shm { seg: 0, addr: std::ptr::null_mut(), size: 0 });
+            c.shm = Some(Shm {
+                seg: 0,
+                addr: std::ptr::null_mut(),
+                size: 0,
+            });
             Ok(c)
         }
 
@@ -104,26 +122,34 @@ mod x11 {
                     bail!("shmat failed");
                 }
                 let seg = self.conn.generate_id()?;
-                let attached = self.conn.shm_attach(seg, id as u32, false).map(|c| c.check());
+                let attached = self
+                    .conn
+                    .shm_attach(seg, id as u32, false)
+                    .map(|c| c.check());
                 // The segment disappears once both sides detach.
                 libc::shmctl(id, libc::IPC_RMID, std::ptr::null_mut());
                 if !matches!(attached, Ok(Ok(()))) {
                     libc::shmdt(addr);
                     bail!("X server refused the shared memory segment");
                 }
-                self.shm = Some(Shm { seg, addr: addr as *mut u8, size });
+                self.shm = Some(Shm {
+                    seg,
+                    addr: addr as *mut u8,
+                    size,
+                });
             }
             Ok(())
         }
 
         fn free_shm(&mut self) {
             if let Some(shm) = &mut self.shm
-                && !shm.addr.is_null() {
-                    let _ = self.conn.shm_detach(shm.seg);
-                    unsafe { libc::shmdt(shm.addr as *const _) };
-                    shm.addr = std::ptr::null_mut();
-                    shm.size = 0;
-                }
+                && !shm.addr.is_null()
+            {
+                let _ = self.conn.shm_detach(shm.seg);
+                unsafe { libc::shmdt(shm.addr as *const _) };
+                shm.addr = std::ptr::null_mut();
+                shm.size = 0;
+            }
         }
     }
 
@@ -139,23 +165,45 @@ mod x11 {
             let (w, h) = (geo.width as usize, geo.height as usize);
             let size = w * h * 4;
             if self.shm.is_some()
-                && let Err(e) = self.ensure_shm(size) {
-                    tracing::warn!("MIT-SHM setup failed ({e}), falling back to plain capture");
-                    self.shm = None;
-                }
+                && let Err(e) = self.ensure_shm(size)
+            {
+                tracing::warn!("MIT-SHM setup failed ({e}), falling back to plain capture");
+                self.shm = None;
+            }
             out.width = w;
             out.height = h;
             out.bgra.resize(size, 0);
             match &self.shm {
                 Some(shm) => {
                     self.conn
-                        .shm_get_image(self.root, 0, 0, w as u16, h as u16, !0, ImageFormat::Z_PIXMAP.into(), shm.seg, 0)?
+                        .shm_get_image(
+                            self.root,
+                            0,
+                            0,
+                            w as u16,
+                            h as u16,
+                            !0,
+                            ImageFormat::Z_PIXMAP.into(),
+                            shm.seg,
+                            0,
+                        )?
                         .reply()?;
                     let src = unsafe { std::slice::from_raw_parts(shm.addr, size) };
                     out.bgra.copy_from_slice(src);
                 }
                 None => {
-                    let img = self.conn.get_image(ImageFormat::Z_PIXMAP, self.root, 0, 0, w as u16, h as u16, !0)?.reply()?;
+                    let img = self
+                        .conn
+                        .get_image(
+                            ImageFormat::Z_PIXMAP,
+                            self.root,
+                            0,
+                            0,
+                            w as u16,
+                            h as u16,
+                            !0,
+                        )?
+                        .reply()?;
                     out.bgra.copy_from_slice(&img.data[..size]);
                 }
             }
@@ -194,7 +242,9 @@ mod dxgi {
             let adapter = dxgi.GetAdapter()?;
             let output = adapter.EnumOutputs(0).context("no monitor found")?;
             let output1: IDXGIOutput1 = output.cast()?;
-            output1.DuplicateOutput(device).context("DuplicateOutput failed")
+            output1
+                .DuplicateOutput(device)
+                .context("DuplicateOutput failed")
         }
     }
 
@@ -218,7 +268,13 @@ mod dxgi {
                 let device = device.context("no D3D11 device")?;
                 let ctx = ctx.context("no D3D11 context")?;
                 let dup = duplicate(&device)?;
-                Ok(DxgiCapturer { device, ctx, dup, staging: None, have_frame: false })
+                Ok(DxgiCapturer {
+                    device,
+                    ctx,
+                    dup,
+                    staging: None,
+                    have_frame: false,
+                })
             }
         }
     }
@@ -262,20 +318,26 @@ mod dxgi {
                         sd.ArraySize = 1;
                         let mut staging = None;
                         self.device.CreateTexture2D(&sd, None, Some(&mut staging))?;
-                        self.staging = Some((staging.context("no staging texture")?, desc.Width, desc.Height));
+                        self.staging = Some((
+                            staging.context("no staging texture")?,
+                            desc.Width,
+                            desc.Height,
+                        ));
                     }
                     let (staging, w, h) = self.staging.as_ref().unwrap();
                     let (w, h) = (*w as usize, *h as usize);
                     self.ctx.CopyResource(staging, &tex);
                     let mut map = D3D11_MAPPED_SUBRESOURCE::default();
-                    self.ctx.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut map))?;
+                    self.ctx
+                        .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut map))?;
                     out.width = w;
                     out.height = h;
                     out.bgra.resize(w * h * 4, 0);
                     let pitch = map.RowPitch as usize;
                     let src = std::slice::from_raw_parts(map.pData as *const u8, pitch * h);
                     for y in 0..h {
-                        out.bgra[y * w * 4..(y + 1) * w * 4].copy_from_slice(&src[y * pitch..y * pitch + w * 4]);
+                        out.bgra[y * w * 4..(y + 1) * w * 4]
+                            .copy_from_slice(&src[y * pitch..y * pitch + w * 4]);
                     }
                     self.ctx.Unmap(staging, 0);
                     self.have_frame = true;

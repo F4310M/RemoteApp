@@ -31,19 +31,35 @@ pub enum MouseButton {
 pub enum InputEvent {
     /// Absolute position as a fraction of the host screen,
     /// 0 = left/top edge, 65535 = right/bottom edge.
-    MouseMove { x: u16, y: u16 },
-    MouseButton { button: MouseButton, down: bool },
+    MouseMove {
+        x: u16,
+        y: u16,
+    },
+    MouseButton {
+        button: MouseButton,
+        down: bool,
+    },
     /// Wheel steps; positive `dy` scrolls down, positive `dx` scrolls right.
-    Scroll { dx: i32, dy: i32 },
+    Scroll {
+        dx: i32,
+        dy: i32,
+    },
     /// Physical key, as a Linux evdev code (see `keymap.rs`).
-    Key { code: u16, down: bool },
+    Key {
+        code: u16,
+        down: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ClientMsg {
     /// First message. `name` is shown on the host; `pair` asks the host to
     /// remember this device's key so later connections need no password.
-    Hello { version: u32, name: String, pair: bool },
+    Hello {
+        version: u32,
+        name: String,
+        pair: bool,
+    },
     /// Answer to [`HostMsg::NeedPassword`].
     Password(String),
     Input(InputEvent),
@@ -64,7 +80,9 @@ pub enum HostMsg {
         paired: bool,
         wake: Option<crate::wake::WakeInfo>,
     },
-    Rejected { reason: String },
+    Rejected {
+        reason: String,
+    },
 }
 
 pub async fn write_msg<W: AsyncWrite + Unpin, T: Serialize>(w: &mut W, msg: &T) -> Result<()> {
@@ -75,7 +93,9 @@ pub async fn write_msg<W: AsyncWrite + Unpin, T: Serialize>(w: &mut W, msg: &T) 
 }
 
 /// Returns `Ok(None)` when the stream ended cleanly.
-pub async fn read_msg<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(r: &mut R) -> Result<Option<T>> {
+pub async fn read_msg<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(
+    r: &mut R,
+) -> Result<Option<T>> {
     let mut len = [0u8; 4];
     match r.read_exact(&mut len).await {
         Ok(_) => {}
@@ -88,7 +108,9 @@ pub async fn read_msg<R: AsyncRead + Unpin, T: for<'de> Deserialize<'de>>(r: &mu
     }
     let mut body = vec![0u8; len as usize];
     r.read_exact(&mut body).await?;
-    Ok(Some(bincode::deserialize(&body).context("malformed control message")?))
+    Ok(Some(
+        bincode::deserialize(&body).context("malformed control message")?,
+    ))
 }
 
 /// Header written before each encoded frame on the video stream.
@@ -143,10 +165,24 @@ mod tests {
     #[tokio::test]
     async fn control_roundtrip() {
         let (mut a, mut b) = tokio::io::duplex(1024);
-        write_msg(&mut a, &ClientMsg::Input(InputEvent::Key { code: 30, down: true })).await.unwrap();
+        write_msg(
+            &mut a,
+            &ClientMsg::Input(InputEvent::Key {
+                code: 30,
+                down: true,
+            }),
+        )
+        .await
+        .unwrap();
         drop(a);
         let m: ClientMsg = read_msg(&mut b).await.unwrap().unwrap();
-        assert!(matches!(m, ClientMsg::Input(InputEvent::Key { code: 30, down: true })));
+        assert!(matches!(
+            m,
+            ClientMsg::Input(InputEvent::Key {
+                code: 30,
+                down: true
+            })
+        ));
         assert!(read_msg::<_, ClientMsg>(&mut b).await.unwrap().is_none());
     }
 
@@ -154,7 +190,12 @@ mod tests {
     async fn video_roundtrip() {
         let (mut a, mut b) = tokio::io::duplex(1024);
         let payload = vec![0, 0, 0, 1, 0x67, 1, 2, 3];
-        let f = VideoFrame { width: 640, height: 480, keyframe: true, len: payload.len() as u32 };
+        let f = VideoFrame {
+            width: 640,
+            height: 480,
+            keyframe: true,
+            len: payload.len() as u32,
+        };
         f.write(&mut a, &payload).await.unwrap();
         let mut buf = Vec::new();
         let g = VideoFrame::read(&mut b, &mut buf).await.unwrap().unwrap();

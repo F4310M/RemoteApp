@@ -14,8 +14,8 @@ use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 use tokio::sync::mpsc;
 
-use crate::proto::{self, ClientMsg, DEFAULT_PORT, HostMsg, PROTOCOL_VERSION, VideoFrame};
 use crate::devices;
+use crate::proto::{self, ClientMsg, DEFAULT_PORT, HostMsg, PROTOCOL_VERSION, VideoFrame};
 use crate::tls::{self, Expect};
 
 pub struct ConnectOptions {
@@ -49,12 +49,18 @@ pub struct Session {
 }
 
 pub fn run(opts: ConnectOptions) -> Result<()> {
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()?;
     let event_loop = winit::event_loop::EventLoop::<UiEvent>::with_user_event().build()?;
     let proxy = event_loop.create_proxy();
 
     let (conn, session) = rt.block_on(connect(&opts, proxy))?;
-    println!("  Connected to {}. Close the window to disconnect.", session.host_name);
+    println!(
+        "  Connected to {}. Close the window to disconnect.",
+        session.host_name
+    );
 
     let result = viewer::run(event_loop, session);
     conn.close(0u32.into(), b"bye");
@@ -100,7 +106,10 @@ async fn connect(
         bail!("no address for {target}");
     }
 
-    let remembered = saved.as_ref().map(|r| r.fingerprint.clone()).or_else(|| tls::known_host(&dir, &target));
+    let remembered = saved
+        .as_ref()
+        .map(|r| r.fingerprint.clone())
+        .or_else(|| tls::known_host(&dir, &target));
     let expect = match (&opts.fingerprint, &remembered) {
         (Some(fp), _) => Expect::Pinned(fp.clone()),
         (None, Some(fp)) => Expect::Pinned(fp.clone()),
@@ -109,7 +118,11 @@ async fn connect(
     let id = tls::load_or_create_identity(&dir)?;
     let (client_cfg, seen) = tls::client_config(expect.clone(), &id)?;
 
-    let per_try = if addrs.len() == 1 { Duration::from_secs(10) } else { Duration::from_secs(4) };
+    let per_try = if addrs.len() == 1 {
+        Duration::from_secs(10)
+    } else {
+        Duration::from_secs(4)
+    };
     let mut conn = None;
     let mut last_err = None;
     for addr in &addrs {
@@ -138,12 +151,19 @@ async fn connect(
     let Some(conn) = conn else {
         let e = last_err.unwrap_or_else(|| anyhow::anyhow!("no address to try"));
         if saved.as_ref().is_some_and(|r| r.wake.is_some()) {
-            return Err(e.context(format!("the host is not answering. If it is asleep, try `magicremote wake {} --connect`", opts.host)));
+            return Err(e.context(format!(
+                "the host is not answering. If it is asleep, try `magicremote wake {} --connect`",
+                opts.host
+            )));
         }
         return Err(e);
     };
     let used_addr = conn.remote_address();
-    let fp = seen.lock().unwrap().clone().context("host sent no certificate")?;
+    let fp = seen
+        .lock()
+        .unwrap()
+        .clone()
+        .context("host sent no certificate")?;
 
     if matches!(expect, Expect::FirstUse) {
         println!();
@@ -158,15 +178,23 @@ async fn connect(
     }
 
     let (mut ctl_send, mut ctl_recv) = conn.open_bi().await?;
-    let hello = ClientMsg::Hello { version: PROTOCOL_VERSION, name: devices::this_device_name(), pair: opts.pair };
+    let hello = ClientMsg::Hello {
+        version: PROTOCOL_VERSION,
+        name: devices::this_device_name(),
+        pair: opts.pair,
+    };
     let busy = |e: anyhow::Error| match conn.close_reason() {
         Some(quinn::ConnectionError::ApplicationClosed(c)) if &c.reason[..] == b"busy" => {
             anyhow::anyhow!("the host is busy: another PC is connected to it")
         }
         _ => e,
     };
-    proto::write_msg(&mut ctl_send, &hello).await.map_err(busy)?;
-    let mut reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv).await.map_err(busy)?;
+    proto::write_msg(&mut ctl_send, &hello)
+        .await
+        .map_err(busy)?;
+    let mut reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv)
+        .await
+        .map_err(busy)?;
     if let Some(HostMsg::NeedPassword) = reply {
         let password = match &opts.password {
             Some(p) => p.clone(),
@@ -178,7 +206,13 @@ async fn connect(
         reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv).await?;
     }
     let (screen, host_name) = match reply {
-        Some(HostMsg::Welcome { screen_width, screen_height, host_name, paired, wake }) => {
+        Some(HostMsg::Welcome {
+            screen_width,
+            screen_height,
+            host_name,
+            paired,
+            wake,
+        }) => {
             let rec = hosts::HostRecord {
                 name: host_name.clone(),
                 fingerprint: fp.clone(),
@@ -204,7 +238,10 @@ async fn connect(
         tls::remember_host(&dir, &target, &fp)?;
     }
 
-    let video = conn.accept_uni().await.context("host did not open the video stream")?;
+    let video = conn
+        .accept_uni()
+        .await
+        .context("host did not open the video stream")?;
 
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<ClientMsg>();
     tokio::spawn(async move {
@@ -219,7 +256,9 @@ async fn connect(
     let (packet_tx, packet_rx) = std_mpsc::sync_channel::<(VideoFrame, Vec<u8>)>(8);
     {
         let (picture, proxy, input_tx) = (picture.clone(), proxy.clone(), input_tx.clone());
-        std::thread::Builder::new().name("decode".into()).spawn(move || decode_loop(packet_rx, picture, proxy, input_tx))?;
+        std::thread::Builder::new()
+            .name("decode".into())
+            .spawn(move || decode_loop(packet_rx, picture, proxy, input_tx))?;
     }
     tokio::spawn(async move {
         let mut video = video;
@@ -245,12 +284,28 @@ async fn connect(
         });
     }
 
-    Ok((conn, Session { host_name, screen, input: input_tx, picture }))
+    Ok((
+        conn,
+        Session {
+            host_name,
+            screen,
+            input: input_tx,
+            picture,
+        },
+    ))
 }
 
 /// One QUIC handshake attempt; fails fast on a timeout.
-async fn try_connect(addr: SocketAddr, cfg: quinn::ClientConfig, timeout: Duration) -> Result<quinn::Connection> {
-    let bind: SocketAddr = if addr.is_ipv6() { "[::]:0".parse()? } else { "0.0.0.0:0".parse()? };
+async fn try_connect(
+    addr: SocketAddr,
+    cfg: quinn::ClientConfig,
+    timeout: Duration,
+) -> Result<quinn::Connection> {
+    let bind: SocketAddr = if addr.is_ipv6() {
+        "[::]:0".parse()?
+    } else {
+        "0.0.0.0:0".parse()?
+    };
     let mut endpoint = quinn::Endpoint::client(bind)?;
     endpoint.set_default_client_config(cfg);
     match tokio::time::timeout(timeout, endpoint.connect(addr, "magicremote")?).await {
@@ -265,52 +320,82 @@ async fn try_connect(addr: SocketAddr, cfg: quinn::ClientConfig, timeout: Durati
     }
 }
 
-/// `magicremote wake`: sends magic packets until the host answers.
-pub fn wake(query: &str, connect: bool, wait: Duration) -> Result<()> {
+/// Tries every known address of `rec` at once. Returns the first that
+/// answered. Each test connection is closed as a "probe" so the host does
+/// not count it as a viewer.
+pub async fn probe(
+    rec: &hosts::HostRecord,
+    cfg: &quinn::ClientConfig,
+    timeout: Duration,
+) -> Option<SocketAddr> {
+    let mut probes = tokio::task::JoinSet::new();
+    for addr in rec.candidates() {
+        let cfg = cfg.clone();
+        probes.spawn(async move { try_connect(addr, cfg, timeout).await.map(|c| (addr, c)) });
+    }
+    // Wait for all of them: every connection that succeeded must be closed
+    // properly, or the host keeps its only seat taken.
+    let mut up = None;
+    while let Some(r) = probes.join_next().await {
+        if let Ok(Ok((addr, c))) = r {
+            c.close(0u32.into(), b"probe");
+            up.get_or_insert(addr);
+        }
+    }
+    if up.is_some() {
+        // Give the close packets time to leave.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    up
+}
+
+/// Client config trusting only this host's key.
+pub fn pinned_config(rec: &hosts::HostRecord) -> Result<quinn::ClientConfig> {
+    let id = tls::load_or_create_identity(&tls::config_dir()?)?;
+    Ok(tls::client_config(Expect::Pinned(rec.fingerprint.clone()), &id)?.0)
+}
+
+/// Sends magic packets until the host answers. Blocking.
+pub fn wake_until_up(query: &str, wait: Duration) -> Result<(hosts::HostRecord, SocketAddr)> {
     let dir = tls::config_dir()?;
     let rec = hosts::find(&dir, query).with_context(|| {
         format!("unknown host \"{query}\": connect to it once first, so Magic Remote learns how to wake it")
     })?;
     let info = rec.wake.clone().with_context(|| {
-        format!("{} did not share its wake details (connect once with an up-to-date Magic Remote)", rec.name)
+        format!(
+            "{} did not share its wake details (connect once with an up-to-date Magic Remote)",
+            rec.name
+        )
     })?;
     if !info.wired {
-        println!("  Note: {} uses Wi-Fi, which usually cannot wake a sleeping PC.", rec.name);
+        println!(
+            "  Note: {} uses Wi-Fi, which usually cannot wake a sleeping PC.",
+            rec.name
+        );
     }
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().worker_threads(2).build()?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .worker_threads(2)
+        .build()?;
     let awake = rt.block_on(async {
-        let id = tls::load_or_create_identity(&dir)?;
-        let (cfg, _) = tls::client_config(Expect::Pinned(rec.fingerprint.clone()), &id)?;
+        let cfg = pinned_config(&rec)?;
         let deadline = tokio::time::Instant::now() + wait;
         let mut first = true;
         while tokio::time::Instant::now() < deadline {
             let sent = crate::wake::send(&info, &[rec.last_addr]).await;
             if first {
-                println!("  Waking {} ({})...", rec.name, crate::wake::format_mac(&info.mac));
+                println!(
+                    "  Waking {} ({})...",
+                    rec.name,
+                    crate::wake::format_mac(&info.mac)
+                );
                 for t in &sent {
                     println!("    magic packet → {t}");
                 }
                 first = false;
             }
-            // Is it up yet? Try every known address at once.
-            let mut probes = tokio::task::JoinSet::new();
-            for addr in rec.candidates() {
-                let cfg = cfg.clone();
-                probes.spawn(async move { try_connect(addr, cfg, Duration::from_secs(2)).await.map(|c| (addr, c)) });
-            }
-            // Wait for all of them: every connection that succeeded must be
-            // closed properly, or the host keeps its only seat taken.
-            let mut up = None;
-            while let Some(r) = probes.join_next().await {
-                if let Ok(Ok((addr, c))) = r {
-                    c.close(0u32.into(), b"probe");
-                    up.get_or_insert(addr);
-                }
-            }
-            if up.is_some() {
-                // Give the close packets time to leave.
-                tokio::time::sleep(Duration::from_millis(300)).await;
-                return Ok::<_, anyhow::Error>(up);
+            if let Some(addr) = probe(&rec, &cfg, Duration::from_secs(2)).await {
+                return Ok::<_, anyhow::Error>(Some(addr));
             }
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
@@ -325,10 +410,21 @@ pub fn wake(query: &str, connect: bool, wait: Duration) -> Result<()> {
         );
     };
     println!("  {} is awake at {addr}.", rec.name);
-    drop(rt);
+    Ok((rec, addr))
+}
+
+/// `magicremote wake`: wakes the host and optionally connects.
+pub fn wake(query: &str, connect: bool, wait: Duration) -> Result<()> {
+    let (rec, addr) = wake_until_up(query, wait)?;
     if connect {
         std::thread::sleep(Duration::from_millis(500));
-        run(ConnectOptions { host: rec.name, password: None, fingerprint: None, pair: false, prefer: Some(addr) })?;
+        run(ConnectOptions {
+            host: rec.name,
+            password: None,
+            fingerprint: None,
+            pair: false,
+            prefer: Some(addr),
+        })?;
     }
     Ok(())
 }
@@ -348,13 +444,16 @@ fn decode_loop(
     proxy: winit::event_loop::EventLoopProxy<UiEvent>,
     input: mpsc::UnboundedSender<ClientMsg>,
 ) {
-    let mut decoder = match Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new()) {
-        Ok(d) => d,
-        Err(e) => {
-            let _ = proxy.send_event(UiEvent::Closed(format!("cannot start the video decoder: {e}")));
-            return;
-        }
-    };
+    let mut decoder =
+        match Decoder::with_api_config(OpenH264API::from_source(), DecoderConfig::new()) {
+            Ok(d) => d,
+            Err(e) => {
+                let _ = proxy.send_event(UiEvent::Closed(format!(
+                    "cannot start the video decoder: {e}"
+                )));
+                return;
+            }
+        };
     let mut rgba = Vec::new();
     let mut waiting_for_keyframe = false;
     while let Ok((mut hdr, mut data)) = rx.recv() {

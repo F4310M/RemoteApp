@@ -8,6 +8,7 @@ anyhow = "1.0.104"
 bincode = "1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 directories = "6.0.0"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "system_fonts", "x11", "wayland", "clipboard"] }
 enigo = "0.6.1"
 hex = "0.4.3"
 igd-next = { version = "0.18.0", features = ["aio_tokio"] }
@@ -23,6 +24,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.10"
 softbuffer = "0.4"
+sys-locale = "0.3.2"
 tokio = { version = "1.54.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -32,7 +34,7 @@ winit = "0.30"
 x11rb = { version = "0.13", features = ["shm"] }
 
 [target."cfg(windows)".dependencies]
-windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com"] }
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com", "Win32_System_Console"] }
 
 [profile.release]
 lto = "thin"

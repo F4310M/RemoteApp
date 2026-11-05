@@ -2,6 +2,7 @@
 
 mod client;
 mod devices;
+mod gui;
 mod host;
 mod keymap;
 mod proto;
@@ -13,10 +14,15 @@ use std::net::IpAddr;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "magicremote", version, about = "Direct remote desktop between two PCs, no server in the middle")]
+#[command(
+    name = "magicremote",
+    version,
+    about = "Direct remote desktop between two PCs, no server in the middle"
+)]
 struct Cli {
+    /// Without a command the desktop app opens.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -87,15 +93,14 @@ enum Cmd {
     /// List the devices paired with this host.
     Devices,
     /// Remove a paired device, by name or fingerprint (first 8+ characters).
-    Revoke {
-        device: String,
-    },
+    Revoke { device: String },
 }
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "magicremote=info,warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "magicremote=info,warn".into()),
         )
         .with_target(false)
         .init();
@@ -106,8 +111,19 @@ fn main() -> anyhow::Result<()> {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
 
-    match Cli::parse().cmd {
-        Cmd::Host { port, bind, password, fps, bitrate, paired_only, no_upnp } => {
+    let Some(cmd) = Cli::parse().cmd else {
+        return gui::run();
+    };
+    match cmd {
+        Cmd::Host {
+            port,
+            bind,
+            password,
+            fps,
+            bitrate,
+            paired_only,
+            no_upnp,
+        } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(host::run(host::HostOptions {
                 bind,
@@ -117,13 +133,29 @@ fn main() -> anyhow::Result<()> {
                 bitrate_kbps: bitrate,
                 paired_only,
                 no_upnp,
+                status: None,
             }))
         }
-        Cmd::Connect { host, fingerprint, password, pair } => {
-            client::run(client::ConnectOptions { host, password, fingerprint, pair, prefer: None })
+        Cmd::Connect {
+            host,
+            fingerprint,
+            password,
+            pair,
+        } => client::run(client::ConnectOptions {
+            host,
+            password,
+            fingerprint,
+            pair,
+            prefer: None,
+        }),
+        Cmd::Wake {
+            host,
+            connect,
+            wait,
+        } => client::wake(&host, connect, std::time::Duration::from_secs(wait)),
+        Cmd::WakeSetup { apply, port } => {
+            tokio::runtime::Runtime::new()?.block_on(wake::setup::run(port, apply))
         }
-        Cmd::Wake { host, connect, wait } => client::wake(&host, connect, std::time::Duration::from_secs(wait)),
-        Cmd::WakeSetup { apply, port } => tokio::runtime::Runtime::new()?.block_on(wake::setup::run(port, apply)),
         Cmd::Hosts => {
             let list = client::hosts::load(&tls::config_dir()?);
             if list.is_empty() {
@@ -144,7 +176,12 @@ fn main() -> anyhow::Result<()> {
                 println!("No paired devices.");
             }
             for d in list {
-                println!("{:<24} {}  (paired {})", d.name, tls::display_fingerprint(&d.fingerprint), days_ago(d.added));
+                println!(
+                    "{:<24} {}  (paired {})",
+                    d.name,
+                    tls::display_fingerprint(&d.fingerprint),
+                    days_ago(d.added)
+                );
             }
             Ok(())
         }
@@ -154,7 +191,11 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("no paired device matches \"{device}\" (see `magicremote devices`)");
             }
             for d in gone {
-                println!("Removed {} ({})", d.name, tls::display_fingerprint(&d.fingerprint));
+                println!(
+                    "Removed {} ({})",
+                    d.name,
+                    tls::display_fingerprint(&d.fingerprint)
+                );
             }
             Ok(())
         }
@@ -167,7 +208,10 @@ fn main() -> anyhow::Result<()> {
 }
 
 fn days_ago(unix: u64) -> String {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     match now.saturating_sub(unix) / 86400 {
         0 => "today".into(),
         1 => "yesterday".into(),

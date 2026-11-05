@@ -5,8 +5,8 @@ mod encode;
 mod input;
 
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -26,19 +26,74 @@ pub struct HostOptions {
     pub paired_only: bool,
     /// Do not ask the router to open the port.
     pub no_upnp: bool,
+    /// Filled in for the GUI; `None` from the command line.
+    pub status: Option<Arc<Mutex<HostStatus>>>,
+}
+
+/// What the host is doing, for the GUI.
+#[derive(Debug, Clone, Default)]
+pub struct HostStatus {
+    pub ready: bool,
+    pub lan_ip: Option<IpAddr>,
+    pub port: u16,
+    pub internet: String,
+    pub internet_ok: bool,
+    /// What the router said, so the GUI can show it in the user's language.
+    pub router: Option<Router>,
+    pub fingerprint: String,
+    /// `None` when only paired devices may connect.
+    pub password: Option<String>,
+    /// Who is watching right now.
+    pub viewer: Option<String>,
+    /// Recent events, newest last.
+    pub events: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Prints an event and records it for the GUI.
+fn note(status: &Option<Arc<Mutex<HostStatus>>>, text: String) {
+    println!("  {text}");
+    if let Some(s) = status {
+        let mut s = s.lock().unwrap();
+        s.events.push(text);
+        let n = s.events.len();
+        if n > 50 {
+            s.events.drain(..n - 50);
+        }
+    }
 }
 
 pub async fn run(opts: HostOptions) -> Result<()> {
     let dir = tls::config_dir()?;
     let id = tls::load_or_create_identity(&dir)?;
     let password = opts.password.clone().unwrap_or_else(random_password);
-    let endpoint = quinn::Endpoint::server(tls::server_config(&id)?, SocketAddr::new(opts.bind, opts.port))
-        .with_context(|| format!("cannot listen on UDP port {}", opts.port))?;
+    let endpoint = quinn::Endpoint::server(
+        tls::server_config(&id)?,
+        SocketAddr::new(opts.bind, opts.port),
+    )
+    .with_context(|| format!("cannot listen on UDP port {}", opts.port))?;
 
-    let router = if opts.no_upnp { Router::Disabled } else { reach::open_router_port(opts.port).await };
+    let router = if opts.no_upnp {
+        Router::Disabled
+    } else {
+        reach::open_router_port(opts.port).await
+    };
     let router = Arc::new(Mutex::new(router));
     if !opts.no_upnp {
         reach::keep_router_port_open(opts.port, router.clone());
+    }
+
+    if let Some(st) = &opts.status {
+        let r = router.lock().unwrap();
+        let mut st = st.lock().unwrap();
+        st.ready = true;
+        st.lan_ip = lan_ip();
+        st.port = opts.port;
+        st.internet = r.describe();
+        st.internet_ok = r.public().is_some();
+        st.router = Some(r.clone());
+        st.fingerprint = tls::display_fingerprint(&id.fingerprint);
+        st.password = (!opts.paired_only).then(|| password.clone());
     }
 
     println!();
@@ -49,9 +104,15 @@ pub async fn run(opts: HostOptions) -> Result<()> {
         None => println!("  Port:        UDP {}", opts.port),
     }
     println!("  Internet:    {}", router.lock().unwrap().describe());
-    println!("  Fingerprint: {}", tls::display_fingerprint(&id.fingerprint));
+    println!(
+        "  Fingerprint: {}",
+        tls::display_fingerprint(&id.fingerprint)
+    );
     if opts.paired_only {
-        println!("  Password:    (disabled: only paired devices, {} known)", devices::list(&dir).len());
+        println!(
+            "  Password:    (disabled: only paired devices, {} known)",
+            devices::list(&dir).len()
+        );
     } else {
         println!("  Password:    {password}");
     }
@@ -59,7 +120,9 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     println!("  On the other PC run:");
     println!(
         "  magicremote connect {} --fingerprint {} --pair",
-        lan_ip().map(|i| i.to_string()).unwrap_or_else(|| "<this-pc-ip>".into()),
+        lan_ip()
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "<this-pc-ip>".into()),
         tls::display_fingerprint(&id.fingerprint)
     );
     println!();
@@ -70,7 +133,8 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     let slot = Arc::new(Semaphore::new(1));
 
     while let Some(incoming) = endpoint.accept().await {
-        let (opts, password, slot, router) = (opts.clone(), password.clone(), slot.clone(), router.clone());
+        let (opts, password, slot, router) =
+            (opts.clone(), password.clone(), slot.clone(), router.clone());
         tokio::spawn(async move {
             let remote = incoming.remote_address();
             let conn = match incoming.await {
@@ -110,29 +174,50 @@ async fn session(
     let client_fp = tls::peer_fingerprint(conn).context("client presented no key")?;
     let dir = tls::config_dir()?;
 
-    let hello = tokio::time::timeout(Duration::from_secs(10), proto::read_msg::<_, ClientMsg>(&mut ctl_recv))
-        .await
-        .context("client did not say hello")??;
+    let hello = tokio::time::timeout(
+        Duration::from_secs(10),
+        proto::read_msg::<_, ClientMsg>(&mut ctl_recv),
+    )
+    .await
+    .context("client did not say hello")??;
     let (name, pair) = match hello {
-        Some(ClientMsg::Hello { version, name, pair }) if version == PROTOCOL_VERSION => (devices::clean(&name), pair),
+        Some(ClientMsg::Hello {
+            version,
+            name,
+            pair,
+        }) if version == PROTOCOL_VERSION => (devices::clean(&name), pair),
         Some(ClientMsg::Hello { version, .. }) => {
-            return reject(&mut ctl_send, format!("version mismatch (host {PROTOCOL_VERSION}, client {version})")).await;
+            return reject(
+                &mut ctl_send,
+                format!("version mismatch (host {PROTOCOL_VERSION}, client {version})"),
+            )
+            .await;
         }
         _ => return reject(&mut ctl_send, "expected hello".into()).await,
     };
-    let who = format!("\"{name}\" ({}, {remote})", &tls::display_fingerprint(&client_fp)[..9]);
+    let who = format!(
+        "\"{name}\" ({}, {remote})",
+        &tls::display_fingerprint(&client_fp)[..9]
+    );
 
     let paired = if devices::is_paired(&dir, &client_fp) {
-        println!("  ● paired device {who} connected");
+        note(&opts.status, format!("● paired device {who} connected"));
         true
     } else if opts.paired_only {
-        return reject(&mut ctl_send, "this host accepts only paired devices".into()).await;
+        return reject(
+            &mut ctl_send,
+            "this host accepts only paired devices".into(),
+        )
+        .await;
     } else {
         proto::write_msg(&mut ctl_send, &HostMsg::NeedPassword).await?;
         // The person on the other side may be typing it.
-        let answer = tokio::time::timeout(Duration::from_secs(120), proto::read_msg::<_, ClientMsg>(&mut ctl_recv))
-            .await
-            .context("client did not send the password")??;
+        let answer = tokio::time::timeout(
+            Duration::from_secs(120),
+            proto::read_msg::<_, ClientMsg>(&mut ctl_recv),
+        )
+        .await
+        .context("client did not send the password")??;
         let ok = matches!(&answer, Some(ClientMsg::Password(p)) if constant_time_eq(p.as_bytes(), password.as_bytes()));
         if !ok {
             // Slow down guessing.
@@ -141,10 +226,12 @@ async fn session(
         }
         if pair {
             devices::pair(&dir, &client_fp, &name)?;
-            println!("  ● new device {who} paired and connected");
-            println!("    (remove it with: magicremote revoke \"{name}\")");
+            note(
+                &opts.status,
+                format!("● new device {who} paired and connected"),
+            );
         } else {
-            println!("  ● {who} connected with password");
+            note(&opts.status, format!("● {who} connected with password"));
         }
         pair
     };
@@ -158,16 +245,30 @@ async fn session(
     {
         let (stop, want_keyframe, screen) = (stop.clone(), want_keyframe.clone(), screen.clone());
         let (fps, bitrate) = (opts.fps.max(1), opts.bitrate_kbps);
-        std::thread::Builder::new().name("video".into()).spawn(move || {
-            if let Err(e) = video_loop(fps, bitrate, frame_tx, ready_tx, stop, want_keyframe, screen) {
-                tracing::error!("video capture stopped: {e:#}");
-            }
-        })?;
+        std::thread::Builder::new()
+            .name("video".into())
+            .spawn(move || {
+                if let Err(e) = video_loop(
+                    fps,
+                    bitrate,
+                    frame_tx,
+                    ready_tx,
+                    stop,
+                    want_keyframe,
+                    screen,
+                ) {
+                    tracing::error!("video capture stopped: {e:#}");
+                }
+            })?;
     }
     let (w, h) = match ready_rx.await {
         Ok(Ok(size)) => size,
         Ok(Err(e)) => {
-            return reject(&mut ctl_send, format!("host cannot capture the screen: {e:#}")).await;
+            return reject(
+                &mut ctl_send,
+                format!("host cannot capture the screen: {e:#}"),
+            )
+            .await;
         }
         Err(_) => bail!("video thread died"),
     };
@@ -179,21 +280,31 @@ async fn session(
         wake: wake::local_info(opts.port, public),
     };
     proto::write_msg(&mut ctl_send, &welcome).await?;
+    if let Some(st) = &opts.status {
+        st.lock().unwrap().viewer = Some(who.clone());
+    }
 
     let (input_tx, input_rx) = std::sync::mpsc::channel();
     {
         let screen = screen.clone();
-        std::thread::Builder::new().name("input".into()).spawn(move || {
-            if let Err(e) = input::run(input_rx, screen) {
-                tracing::error!("input injection unavailable: {e:#}");
-            }
-        })?;
+        std::thread::Builder::new()
+            .name("input".into())
+            .spawn(move || {
+                if let Err(e) = input::run(input_rx, screen) {
+                    tracing::error!("input injection unavailable: {e:#}");
+                }
+            })?;
     }
 
     let mut video = conn.open_uni().await?;
     let video_task = tokio::spawn(async move {
         while let Some(f) = frame_rx.recv().await {
-            let hdr = VideoFrame { width: f.width, height: f.height, keyframe: f.keyframe, len: f.data.len() as u32 };
+            let hdr = VideoFrame {
+                width: f.width,
+                height: f.height,
+                keyframe: f.keyframe,
+                len: f.data.len() as u32,
+            };
             if hdr.write(&mut video, &f.data).await.is_err() {
                 break;
             }
@@ -217,7 +328,10 @@ async fn session(
     stop.store(true, Ordering::Relaxed);
     drop(input_tx);
     video_task.abort();
-    println!("  ○ {who} disconnected");
+    if let Some(st) = &opts.status {
+        st.lock().unwrap().viewer = None;
+    }
+    note(&opts.status, format!("○ {who} disconnected"));
     result
 }
 
@@ -250,7 +364,12 @@ fn video_loop(
             bail!(msg);
         }
     };
-    let set_screen = |f: &capture::Frame| screen.store(((f.width as u64) << 32) | f.height as u64, Ordering::Relaxed);
+    let set_screen = |f: &capture::Frame| {
+        screen.store(
+            ((f.width as u64) << 32) | f.height as u64,
+            Ordering::Relaxed,
+        )
+    };
     set_screen(&frame);
     let _ = ready.send(Ok((frame.width as u32, frame.height as u32)));
 
@@ -267,9 +386,10 @@ fn video_loop(
         // client's picture sharpens and the connection stays warm.
         if changed || last_sent.elapsed() > Duration::from_secs(1) {
             if let Some(e) = enc.encode(&frame)?
-                && tx.blocking_send(e).is_err() {
-                    break;
-                }
+                && tx.blocking_send(e).is_err()
+            {
+                break;
+            }
             last_sent = Instant::now();
         }
         if let Some(rest) = period.checked_sub(t0.elapsed()) {
@@ -284,7 +404,13 @@ fn video_loop(
 }
 
 async fn reject(send: &mut quinn::SendStream, reason: String) -> Result<()> {
-    proto::write_msg(send, &HostMsg::Rejected { reason: reason.clone() }).await?;
+    proto::write_msg(
+        send,
+        &HostMsg::Rejected {
+            reason: reason.clone(),
+        },
+    )
+    .await?;
     let _ = send.finish();
     let _ = tokio::time::timeout(Duration::from_secs(2), send.stopped()).await;
     bail!("rejected: {reason}");
@@ -299,7 +425,10 @@ fn random_password() -> String {
     const ALPHABET: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
     let mut bytes = [0u8; 10];
     rand::fill(&mut bytes);
-    bytes.iter().map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char).collect()
+    bytes
+        .iter()
+        .map(|b| ALPHABET[*b as usize % ALPHABET.len()] as char)
+        .collect()
 }
 
 /// The address other PCs on the LAN most likely use to reach us. Connecting
@@ -307,7 +436,10 @@ fn random_password() -> String {
 fn lan_ip() -> Option<IpAddr> {
     let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     s.connect("192.0.2.1:9").ok()?;
-    s.local_addr().ok().map(|a| a.ip()).filter(|ip| !ip.is_unspecified())
+    s.local_addr()
+        .ok()
+        .map(|a| a.ip())
+        .filter(|ip| !ip.is_unspecified())
 }
 
 #[cfg(test)]

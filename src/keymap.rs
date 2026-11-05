@@ -150,14 +150,14 @@ pub fn evdev_to_set1(code: u16) -> Option<u16> {
     Some(match code {
         // The first 88 evdev codes are the XT set 1 scancodes.
         1..=83 | 86..=88 => code,
-        89 => 0x73,  // RO
-        92 => 0x79,  // Henkan
-        93 => 0x70,  // Katakana/Hiragana
-        94 => 0x7B,  // Muhenkan
-        96 => 0xE01C, // KP Enter
-        97 => 0xE01D, // Right Ctrl
-        98 => 0xE035, // KP /
-        99 => 0xE037, // Print Screen
+        89 => 0x73,    // RO
+        92 => 0x79,    // Henkan
+        93 => 0x70,    // Katakana/Hiragana
+        94 => 0x7B,    // Muhenkan
+        96 => 0xE01C,  // KP Enter
+        97 => 0xE01D,  // Right Ctrl
+        98 => 0xE035,  // KP /
+        99 => 0xE037,  // Print Screen
         100 => 0xE038, // Right Alt / AltGr
         102 => 0xE047,
         103 => 0xE048,
@@ -198,7 +198,10 @@ mod tests {
     fn common_keys() {
         assert_eq!(from_winit(K::KeyA), Some(30));
         assert_eq!(evdev_to_set1(30), Some(0x1E));
-        assert_eq!(evdev_to_set1(from_winit(K::ArrowLeft).unwrap()), Some(0xE04B));
+        assert_eq!(
+            evdev_to_set1(from_winit(K::ArrowLeft).unwrap()),
+            Some(0xE04B)
+        );
         assert_eq!(evdev_to_set1(from_winit(K::F12).unwrap()), Some(0x58));
         assert_eq!(evdev_to_set1(from_winit(K::F13).unwrap()), Some(0x64));
         assert_eq!(evdev_to_set1(from_winit(K::F24).unwrap()), Some(0x76));
