@@ -2079,6 +2079,7 @@ dependencies = [
  "anyhow",
  "argon2",
  "bincode",
+ "bytes",
  "clap",
  "directories",
  "eframe",

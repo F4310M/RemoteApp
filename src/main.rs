@@ -1,6 +1,7 @@
 //! Magic Remote: direct (peer-to-peer) remote desktop between two PCs.
 
 mod auth;
+mod bridge;
 mod client;
 mod devices;
 mod gui;
@@ -52,10 +53,44 @@ enum Cmd {
         /// Do not ask the router (UPnP) to open the port for Internet access.
         #[arg(long)]
         no_upnp: bool,
+        /// Do not register on the cloud bridge, even if one is set up.
+        #[arg(long)]
+        no_bridge: bool,
+    },
+    /// Run a cloud bridge: on a machine with a public address (a small cloud
+    /// server, for example) it lets PCs reach each other when no direct
+    /// connection is possible. It relays encrypted packets only.
+    Bridge {
+        /// UDP port to listen on.
+        #[arg(long, default_value_t = bridge::DEFAULT_PORT)]
+        port: u16,
+        #[arg(long, default_value = "0.0.0.0")]
+        bind: IpAddr,
+        /// Access code PCs must know to use this bridge (recommended).
+        #[arg(long, env = "MAGICREMOTE_BRIDGE_TOKEN", default_value = "")]
+        token: String,
+    },
+    /// Set up the cloud bridge this PC uses (to be reachable while sharing,
+    /// and to reach PCs that are not reachable directly).
+    BridgeSetup {
+        /// Address of the bridge, `name-or-ip[:port]`. Omit to show the
+        /// current setting.
+        addr: Option<String>,
+        /// Its access code, if it has one.
+        #[arg(long, env = "MAGICREMOTE_BRIDGE_TOKEN")]
+        token: Option<String>,
+        /// Its fingerprint, as `magicremote bridge` shows it (else learned
+        /// on first use).
+        #[arg(long)]
+        fingerprint: Option<String>,
+        /// Turn the bridge off (the address is kept).
+        #[arg(long, conflicts_with = "addr")]
+        off: bool,
     },
     /// Connect to a PC running `magicremote host`.
     Connect {
-        /// IP address or name of the host, optionally with `:port`.
+        /// IP address or name of the host, optionally with `:port`, or its
+        /// fingerprint to connect through the cloud bridge.
         host: String,
         /// Host fingerprint, as shown on the host. Needed only the first
         /// time; without it you are asked to confirm it.
@@ -141,6 +176,7 @@ fn main() -> anyhow::Result<()> {
             bitrate,
             paired_only,
             no_upnp,
+            no_bridge,
         } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(host::run(host::HostOptions {
@@ -151,6 +187,7 @@ fn main() -> anyhow::Result<()> {
                 bitrate_kbps: bitrate,
                 paired_only,
                 no_upnp,
+                no_bridge,
                 status: None,
                 guard: Default::default(),
                 approvals: None,
@@ -180,6 +217,54 @@ fn main() -> anyhow::Result<()> {
             connect,
             wait,
         } => client::wake(&host, connect, std::time::Duration::from_secs(wait)),
+        Cmd::Bridge { port, bind, token } => {
+            tokio::runtime::Runtime::new()?.block_on(bridge::serve(bridge::ServeOptions {
+                bind: std::net::SocketAddr::new(bind, port),
+                token,
+            }))
+        }
+        Cmd::BridgeSetup {
+            addr,
+            token,
+            fingerprint,
+            off,
+        } => {
+            let dir = tls::config_dir()?;
+            let mut s = bridge::load(&dir);
+            if off {
+                s.enabled = false;
+            } else if let Some(a) = addr {
+                if a.trim() != s.addr {
+                    s.fingerprint = None; // a different bridge
+                }
+                s.addr = a.trim().to_string();
+                s.enabled = true;
+            }
+            if let Some(t) = token {
+                s.token = t;
+            }
+            if let Some(fp) = fingerprint {
+                s.fingerprint = Some(fp);
+            }
+            bridge::save(&dir, &s)?;
+            match s.active() {
+                Some(b) => println!(
+                    "Cloud bridge on: {}{}{}",
+                    b.addr,
+                    if b.token.is_empty() {
+                        ""
+                    } else {
+                        " (with access code)"
+                    },
+                    match &b.fingerprint {
+                        Some(fp) => format!(", fingerprint {}", tls::display_fingerprint(fp)),
+                        None => ", fingerprint learned on first use".into(),
+                    }
+                ),
+                None => println!("Cloud bridge off."),
+            }
+            Ok(())
+        }
         Cmd::WakeSetup { apply, port } => {
             tokio::runtime::Runtime::new()?.block_on(wake::setup::run(port, apply))
         }

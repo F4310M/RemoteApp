@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 pub const ALPN: &[u8] = b"magicremote/3";
 pub const DEFAULT_PORT: u16 = 47800;
 /// Upper bound for a single control message (keeps a broken peer from
@@ -82,6 +82,8 @@ pub enum HostMsg {
         host_name: String,
         paired: bool,
         wake: Option<crate::wake::WakeInfo>,
+        /// The cloud bridge this host is reachable through, if any.
+        bridge: Option<crate::bridge::BridgeInfo>,
     },
     Rejected {
         reason: String,

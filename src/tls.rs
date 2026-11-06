@@ -127,16 +127,25 @@ pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
 }
 
 pub fn server_config(id: &HostIdentity) -> Result<quinn::ServerConfig> {
+    server_config_with(id, ALPN, transport())
+}
+
+/// Server config for another protocol on the same device key (the bridge).
+pub fn server_config_with(
+    id: &HostIdentity,
+    alpn: &[u8],
+    transport: quinn::TransportConfig,
+) -> Result<quinn::ServerConfig> {
     let mut tls = rustls::ServerConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_client_cert_verifier(Arc::new(AnyClientKey {
             provider: provider(),
         }))
         .with_single_cert(vec![id.cert.clone()], id.key.clone_key())?;
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
     let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-    cfg.transport_config(Arc::new(transport()));
+    cfg.transport_config(Arc::new(transport));
     Ok(cfg)
 }
 
@@ -154,6 +163,16 @@ pub fn client_config(
     expect: Expect,
     id: &HostIdentity,
 ) -> Result<(quinn::ClientConfig, Arc<Mutex<Option<String>>>)> {
+    client_config_with(expect, id, ALPN, transport())
+}
+
+/// Client config for another protocol on the same device key (the bridge).
+pub fn client_config_with(
+    expect: Expect,
+    id: &HostIdentity,
+    alpn: &[u8],
+    transport: quinn::TransportConfig,
+) -> Result<(quinn::ClientConfig, Arc<Mutex<Option<String>>>)> {
     let seen = Arc::new(Mutex::new(None));
     let verifier = Arc::new(FingerprintVerifier {
         expect,
@@ -165,10 +184,10 @@ pub fn client_config(
         .dangerous()
         .with_custom_certificate_verifier(verifier)
         .with_client_auth_cert(vec![id.cert.clone()], id.key.clone_key())?;
-    tls.alpn_protocols = vec![ALPN.to_vec()];
+    tls.alpn_protocols = vec![alpn.to_vec()];
     let crypto = quinn::crypto::rustls::QuicClientConfig::try_from(tls)?;
     let mut cfg = quinn::ClientConfig::new(Arc::new(crypto));
-    cfg.transport_config(Arc::new(transport()));
+    cfg.transport_config(Arc::new(transport));
     Ok((cfg, seen))
 }
 

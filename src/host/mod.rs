@@ -15,7 +15,7 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 use crate::auth::{self, Guard, Secret};
 use crate::proto::{self, ClientMsg, HostMsg, PROTOCOL_VERSION, VideoFrame};
 use crate::wake::setup::{self as reach, Router};
-use crate::{devices, tls, wake};
+use crate::{bridge, devices, tls, wake};
 
 pub struct HostOptions {
     pub bind: IpAddr,
@@ -27,6 +27,8 @@ pub struct HostOptions {
     pub paired_only: bool,
     /// Do not ask the router to open the port.
     pub no_upnp: bool,
+    /// Do not register on the cloud bridge.
+    pub no_bridge: bool,
     /// Filled in for the GUI; `None` from the command line.
     pub status: Option<Arc<Mutex<HostStatus>>>,
     /// Wrong-password bookkeeping, shared with the GUI.
@@ -65,6 +67,8 @@ pub struct HostStatus {
     pub internet_ok: bool,
     /// What the router said, so the GUI can show it in the user's language.
     pub router: Option<Router>,
+    /// The cloud bridge in use and how the link to it is doing.
+    pub bridge: Option<(String, bridge::State)>,
     pub fingerprint: String,
     /// `None` when only paired devices may connect.
     pub password: Option<String>,
@@ -108,6 +112,36 @@ pub async fn run(opts: HostOptions) -> Result<()> {
         reach::keep_router_port_open(opts.port, router.clone());
     }
 
+    let bridge_info = if opts.no_bridge {
+        None
+    } else {
+        bridge::load(&dir).active()
+    };
+    let peers: bridge::Peers = Default::default();
+    let bridge_state = Arc::new(Mutex::new(bridge::State::Connecting));
+    let _bridge_task = bridge_info.clone().map(|info| {
+        let task = tokio::spawn(bridge::keep_registered(
+            info.clone(),
+            endpoint
+                .local_addr()
+                .unwrap_or(SocketAddr::new(opts.bind, opts.port)),
+            peers.clone(),
+            bridge_state.clone(),
+        ));
+        // Mirror the link state into the status the app shows.
+        if let Some(st) = opts.status.clone() {
+            let (state, addr) = (bridge_state.clone(), info.addr.clone());
+            tokio::spawn(async move {
+                loop {
+                    let now = state.lock().unwrap().clone();
+                    st.lock().unwrap().bridge = Some((addr.clone(), now));
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                }
+            });
+        }
+        AbortOnDrop(task)
+    });
+
     if let Some(st) = &opts.status {
         let r = router.lock().unwrap();
         let mut st = st.lock().unwrap();
@@ -129,6 +163,9 @@ pub async fn run(opts: HostOptions) -> Result<()> {
         None => println!("  Port:        UDP {}", opts.port),
     }
     println!("  Internet:    {}", router.lock().unwrap().describe());
+    if let Some(b) = &bridge_info {
+        println!("  Cloud bridge: {} (reachable from any network)", b.addr);
+    }
     println!(
         "  Fingerprint: {}",
         tls::display_fingerprint(&id.fingerprint)
@@ -159,11 +196,13 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     // One viewer at a time.
     let slot = Arc::new(Semaphore::new(1));
 
+    let bridge_info = Arc::new(bridge_info);
     while let Some(incoming) = endpoint.accept().await {
         let (opts, password, slot, router) =
             (opts.clone(), password.clone(), slot.clone(), router.clone());
+        let (peers, bridge_info) = (peers.clone(), bridge_info.clone());
         tokio::spawn(async move {
-            let remote = incoming.remote_address();
+            let (remote, _) = bridge::real_remote(&peers, incoming.remote_address());
             let conn = match incoming.await {
                 Ok(c) => c,
                 Err(e) => return tracing::warn!("handshake with {remote} failed: {e}"),
@@ -173,7 +212,12 @@ pub async fn run(opts: HostOptions) -> Result<()> {
                 return tracing::info!("refused {remote}: another viewer is connected");
             };
             let public = router.lock().unwrap().public();
-            match session(&conn, &opts, &password, public).await {
+            let link = Link {
+                public,
+                peers: &peers,
+                bridge: bridge_info.as_ref().clone().map(bridge::with_learned_key),
+            };
+            match session(&conn, &opts, &password, link).await {
                 Ok(()) => tracing::info!("{remote} disconnected"),
                 // `magicremote wake` only checks that we are up.
                 Err(_) if is_probe(&conn) => {}
@@ -185,6 +229,22 @@ pub async fn run(opts: HostOptions) -> Result<()> {
     Ok(())
 }
 
+/// Aborts a background task when dropped (the bridge link ends with the host).
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// How this host can be reached, for the session and the welcome message.
+struct Link<'a> {
+    public: Option<SocketAddr>,
+    peers: &'a bridge::Peers,
+    bridge: Option<bridge::BridgeInfo>,
+}
+
 fn is_probe(conn: &quinn::Connection) -> bool {
     matches!(conn.close_reason(), Some(quinn::ConnectionError::ApplicationClosed(c)) if &c.reason[..] == b"probe")
 }
@@ -193,9 +253,9 @@ async fn session(
     conn: &quinn::Connection,
     opts: &HostOptions,
     password: &str,
-    public: Option<SocketAddr>,
+    link: Link<'_>,
 ) -> Result<()> {
-    let remote = conn.remote_address();
+    let (remote, via_bridge) = bridge::real_remote(link.peers, conn.remote_address());
     let (mut ctl_send, mut ctl_recv) = conn.accept_bi().await?;
 
     let client_fp = tls::peer_fingerprint(conn).context("client presented no key")?;
@@ -223,8 +283,9 @@ async fn session(
         _ => return reject(&mut ctl_send, "expected hello".into()).await,
     };
     let who = format!(
-        "\"{name}\" ({}, {remote})",
-        &tls::display_fingerprint(&client_fp)[..9]
+        "\"{name}\" ({}, {remote}{})",
+        &tls::display_fingerprint(&client_fp)[..9],
+        if via_bridge { " via cloud bridge" } else { "" }
     );
 
     let paired = if devices::is_paired(&dir, &client_fp) {
@@ -376,7 +437,8 @@ async fn session(
         screen_height: h,
         host_name: devices::this_device_name(),
         paired,
-        wake: wake::local_info(opts.port, public),
+        wake: wake::local_info(opts.port, link.public),
+        bridge: link.bridge.clone(),
     };
     proto::write_msg(&mut ctl_send, &welcome).await?;
     if let Some(st) = &opts.status {

@@ -2,7 +2,7 @@
 
 Desktop remoto **diretto** tra due PC Windows e Linux: nessun server nel mezzo, il video e l'input viaggiano cifrati da un PC all'altro.
 
-> Stato: **prima versione (MVP) per LAN / IP diretto**. Funziona tra PC della stessa rete, via VPN (WireGuard, Tailscale…) o verso un PC con porta aperta / IPv6. Il collegamento attraverso NAT via Internet arriva più avanti.
+> Stato: **MVP**. Funziona tra PC della stessa rete, via VPN (WireGuard, Tailscale…), verso un PC con porta aperta / IPv6 e, quando nessuna di queste strade c'è (CGNAT, reti aziendali), attraverso il **ponte cloud**.
 
 ## Come si usa
 
@@ -107,6 +107,20 @@ Limiti:
 - **Linux** non ha l'ARP offload: da Internet il risveglio può non riuscire dopo qualche minuto di sospensione. Dalla rete locale funziona sempre.
 - Al risveglio Windows mostra la schermata di blocco. Per vederla e inserire il PIN da remoto serve Magic Remote come servizio di sistema, che è il prossimo passo. Fino ad allora funziona se il PC al risveglio non chiede l'accesso.
 
+## Ponte cloud (quando il collegamento diretto non va)
+
+Se l'host è dietro CGNAT, il router non ha UPnP o una rete aziendale blocca tutto, i due PC possono passare da un **ponte**: un computer sempre acceso con indirizzo pubblico, per esempio un piccolo server cloud (bastano pochi euro al mese o un'istanza gratuita).
+
+1. Sul server: `magicremote bridge --token <codice-segreto>` (porta UDP **47801**, da aprire nel firewall del server). Mostra la sua impronta.
+2. Sul PC da raggiungere: scheda **Condividi questo PC** → **Ponte cloud**: spunta *Ponte cloud attivo*, scrivi l'indirizzo del server e il codice, **Salva**, poi avvia la condivisione. La riga "Ponte cloud" diventa verde: *raggiungibile da qualsiasi rete*. Da riga di comando: `magicremote bridge-setup server.example.com --token <codice>`.
+3. Dall'altro PC: se si è già collegato una volta, non serve fare niente. Il PC host gli ha comunicato il suo ponte e, se il collegamento diretto non risponde, Magic Remote passa dal ponte da solo. La prima volta, con il ponte impostato anche lì, basta l'**impronta** dell'host: *Aggiungi PC* lasciando vuoto l'indirizzo, oppure `magicremote connect <impronta>`.
+
+Il ponte **non può leggere niente**: client e host fanno la loro normale connessione cifrata (chiave dell'host verificata, password o abbinamento, conferma sul PC) *dentro* il ponte, che vede solo pacchetti cifrati. L'host vede e blocca l'indirizzo reale di chi si collega, non quello del ponte. Il codice del ponte (`--token`) evita che estranei usino il tuo server. La chiave del ponte viene ricordata al primo collegamento (come per gli host); `bridge-setup --fingerprint` la fissa a mano.
+
+Note:
+- Il video passa due volte da Internet (andata al server e ritorno): la qualità dipende dalla banda del server. Se il collegamento diretto funziona, Magic Remote usa sempre quello.
+- Un PC in standby non è collegato al ponte: il risveglio da Internet continua a richiedere la porta aperta (vedi sotto).
+
 ## Sicurezza
 
 - Trasporto **QUIC con TLS 1.3**: tutto è cifrato.
@@ -119,8 +133,9 @@ Limiti:
 - **Blocco dell'app**: un PIN o una password (hash Argon2id) da inserire per aprire Magic Remote, con blocco automatico dopo 5–60 minuti di inattività. Dopo 3 PIN sbagliati bisogna aspettare 30 secondi, poi sempre di più (fino a 15 minuti), anche chiudendo e riaprendo l'app. La condivisione resta attiva mentre l'app è bloccata. Il blocco protegge l'app aperta, non cifra i file sul disco.
 - La finestra passa la password al processo di connessione attraverso una pipe (`connect --password-stdin`), non nella riga di comando né nelle variabili d'ambiente.
 - Un solo visualizzatore alla volta.
+- Il **ponte cloud** inoltra solo pacchetti già cifrati da un capo all'altro e non conosce password né chiavi.
 
-File salvati in `~/.config/Magic Remote` (Linux) o `%APPDATA%\Magic Remote\config` (Windows): `host_cert.der` / `host_key.der` (la chiave del PC, la seconda è privata), `known_hosts` e `hosts.json` (host conosciuti e come svegliarli), `paired_devices` (dispositivi abbinati), `security.json` (impostazioni di sicurezza e hash delle password).
+File salvati in `~/.config/Magic Remote` (Linux) o `%APPDATA%\Magic Remote\config` (Windows): `host_cert.der` / `host_key.der` (la chiave del PC, la seconda è privata), `known_hosts` e `hosts.json` (host conosciuti e come svegliarli), `paired_devices` (dispositivi abbinati), `security.json` (impostazioni di sicurezza e hash delle password), `bridge.json` (ponte cloud: indirizzo, codice, impronta).
 
 ## Compilare
 
@@ -147,7 +162,7 @@ Su Linux il visualizzatore usa `libxkbcommon-x11` (già presente in tutti i desk
 
 I tasti viaggiano come **posizione fisica** (codici evdev), così il layout di tastiera dell'host decide il carattere: con layout italiano su entrambi i PC `ò`, `à`, `€` funzionano.
 
-Codice in `src/`: `proto.rs` (protocollo), `tls.rs` (identità e cifratura), `auth.rs` (password, hash e blocco tentativi), `keymap.rs`, `host/` (cattura, codifica, input), `client/` (connessione, decodifica, finestra).
+Codice in `src/`: `proto.rs` (protocollo), `tls.rs` (identità e cifratura), `auth.rs` (password, hash e blocco tentativi), `bridge.rs` (ponte cloud: server, registrazione dell'host, tunnel del client), `keymap.rs`, `host/` (cattura, codifica, input), `client/` (connessione, decodifica, finestra).
 
 ## Limiti noti di questa versione
 
@@ -162,7 +177,7 @@ Codice in `src/`: `proto.rs` (protocollo), `tls.rs` (identità e cifratura), `au
 
 1. Servizio di sistema (Windows e Linux): accesso alla schermata di login/PIN, avvio prima del login.
 2. Risveglio, livelli 2 e 3: "compagno di risveglio" (un altro dispositivo di casa con Magic Remote) e presa smart.
-3. Collegamento via Internet: STUN/ICE e hole punching, codice di connessione.
+3. Collegamento via Internet senza ponte: STUN/ICE e hole punching (il ponte resta come riserva).
 4. Codifica hardware (NVENC, QuickSync, VAAPI).
 5. Wayland (PipeWire + portal, libei).
 6. Scelta del monitor, appunti condivisi, audio.
