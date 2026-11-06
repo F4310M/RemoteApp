@@ -14,9 +14,9 @@ use openh264::decoder::{Decoder, DecoderConfig};
 use openh264::formats::YUVSource;
 use tokio::sync::mpsc;
 
-use crate::devices;
 use crate::proto::{self, ClientMsg, DEFAULT_PORT, HostMsg, PROTOCOL_VERSION, VideoFrame};
 use crate::tls::{self, Expect};
+use crate::{bridge, devices};
 
 pub struct ConnectOptions {
     pub host: String,
@@ -89,26 +89,42 @@ async fn connect(
     proxy: winit::event_loop::EventLoopProxy<UiEvent>,
 ) -> Result<(quinn::Connection, Session)> {
     let dir = tls::config_dir()?;
-    let saved = hosts::find(&dir, &opts.host);
+    let saved =
+        hosts::find(&dir, &opts.host).or_else(|| hosts::find_by_fingerprint(&dir, &opts.host));
+    // A fingerprint instead of an address: go through the cloud bridge.
+    let by_fingerprint = saved.is_none() && looks_like_fingerprint(&opts.host);
     let target = with_default_port(&opts.host);
     let mut addrs: Vec<SocketAddr> = match &saved {
         Some(rec) => rec.candidates(),
+        None if by_fingerprint => Vec::new(),
         None => tokio::net::lookup_host(&target)
             .await
             .with_context(|| format!("cannot resolve {target}"))?
             .collect(),
     };
+    // The host's own bridge first (it told us in its welcome), else ours.
+    let via = saved
+        .as_ref()
+        .and_then(|r| r.bridge.clone())
+        .or_else(|| bridge::load(&dir).active());
     if let Some(p) = opts.prefer {
         addrs.retain(|a| *a != p);
         addrs.insert(0, p);
     }
-    if addrs.is_empty() {
+    if by_fingerprint && via.is_none() {
+        bail!(
+            "to connect by fingerprint, set up the cloud bridge first (`magicremote bridge-setup <address>`), \
+             or give the host's address"
+        );
+    }
+    if addrs.is_empty() && via.is_none() {
         bail!("no address for {target}");
     }
 
     let remembered = saved
         .as_ref()
         .map(|r| r.fingerprint.clone())
+        .or_else(|| by_fingerprint.then(|| opts.host.clone()))
         .or_else(|| tls::known_host(&dir, &target));
     let expect = match (&opts.fingerprint, &remembered) {
         (Some(fp), _) => Expect::Pinned(fp.clone()),
@@ -118,7 +134,7 @@ async fn connect(
     let id = tls::load_or_create_identity(&dir)?;
     let (client_cfg, seen) = tls::client_config(expect.clone(), &id)?;
 
-    let per_try = if addrs.len() == 1 {
+    let per_try = if addrs.len() == 1 && via.is_none() {
         Duration::from_secs(10)
     } else {
         Duration::from_secs(4)
@@ -148,6 +164,24 @@ async fn connect(
             }
         }
     }
+    let mut via_bridge = false;
+    if conn.is_none()
+        && let (Some(b), Expect::Pinned(fp)) = (&via, &expect)
+    {
+        println!("  Connecting through the cloud bridge {}...", b.addr);
+        match bridge::connect_via(b, fp, client_cfg.clone(), Duration::from_secs(10)).await {
+            Ok(c) => {
+                conn = Some(c);
+                via_bridge = true;
+            }
+            Err(e) => {
+                if e.to_string().contains("fingerprint") {
+                    return Err(e);
+                }
+                last_err = Some(e);
+            }
+        }
+    }
     let Some(conn) = conn else {
         let e = last_err.unwrap_or_else(|| anyhow::anyhow!("no address to try"));
         if saved.as_ref().is_some_and(|r| r.wake.is_some()) {
@@ -158,7 +192,15 @@ async fn connect(
         }
         return Err(e);
     };
-    let used_addr = conn.remote_address();
+    // A bridged connection's address is a local tunnel: keep the last real one.
+    let used_addr = if via_bridge {
+        saved
+            .as_ref()
+            .map(|r| r.last_addr)
+            .unwrap_or_else(|| (std::net::Ipv4Addr::UNSPECIFIED, 0).into())
+    } else {
+        conn.remote_address()
+    };
     let fp = seen
         .lock()
         .unwrap()
@@ -216,12 +258,15 @@ async fn connect(
             host_name,
             paired,
             wake,
+            bridge,
         }) => {
             let rec = hosts::HostRecord {
                 name: host_name.clone(),
                 fingerprint: fp.clone(),
                 last_addr: used_addr,
                 wake: wake.or_else(|| saved.as_ref().and_then(|r| r.wake.clone())),
+                // The host stopped using a bridge: forget it too.
+                bridge,
             };
             if let Err(e) = hosts::save(&dir, rec) {
                 tracing::warn!("cannot save host details: {e}");
@@ -240,7 +285,7 @@ async fn connect(
         None => bail!("the host closed the connection"),
     };
     // Only remember a host once it accepted us.
-    if saved.is_none() && remembered.as_deref() != Some(fp.as_str()) {
+    if saved.is_none() && !by_fingerprint && remembered.as_deref() != Some(fp.as_str()) {
         tls::remember_host(&dir, &target, &fp)?;
     }
 
@@ -299,6 +344,15 @@ async fn connect(
             picture,
         },
     ))
+}
+
+/// True for text that is a host fingerprint (short or full form) rather
+/// than an address: 32+ hex digits, only dashes or spaces between.
+pub fn looks_like_fingerprint(s: &str) -> bool {
+    let s = s.trim();
+    s.chars()
+        .all(|c| c.is_ascii_hexdigit() || c == '-' || c == ' ')
+        && s.chars().filter(|c| c.is_ascii_hexdigit()).count() >= 32
 }
 
 /// One QUIC handshake attempt; fails fast on a timeout.
@@ -518,5 +572,10 @@ mod tests {
         assert_eq!(with_default_port("fe80::1"), "[fe80::1]:47800");
         assert_eq!(with_default_port("[fe80::1]"), "[fe80::1]:47800");
         assert_eq!(with_default_port("[fe80::1]:9000"), "[fe80::1]:9000");
+        assert!(super::looks_like_fingerprint(
+            "A1B2-C3D4-E5F6-A7B8-C9D0-E1F2-A3B4-C5D6"
+        ));
+        assert!(!super::looks_like_fingerprint("192.168.1.5"));
+        assert!(!super::looks_like_fingerprint("A1B2-C3D4"));
     }
 }

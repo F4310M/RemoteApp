@@ -15,12 +15,19 @@ pub struct HostRecord {
     pub fingerprint: String,
     pub last_addr: SocketAddr,
     pub wake: Option<WakeInfo>,
+    /// The cloud bridge the host said it is reachable through.
+    #[serde(default)]
+    pub bridge: Option<crate::bridge::BridgeInfo>,
 }
 
 impl HostRecord {
     /// Addresses to try, last one that worked first.
     pub fn candidates(&self) -> Vec<SocketAddr> {
-        let mut v = vec![self.last_addr];
+        // Unspecified: so far reached only through the cloud bridge.
+        let mut v: Vec<SocketAddr> = Some(self.last_addr)
+            .filter(|a| !a.ip().is_unspecified())
+            .into_iter()
+            .collect();
         if let Some(w) = &self.wake {
             for a in w.candidates() {
                 if !v.contains(&a) {
@@ -65,6 +72,13 @@ pub fn find(dir: &Path, query: &str) -> Option<HostRecord> {
     by_name.or_else(by_addr).cloned()
 }
 
+/// Finds a host by its fingerprint (short or full form).
+pub fn find_by_fingerprint(dir: &Path, typed: &str) -> Option<HostRecord> {
+    load(dir)
+        .into_iter()
+        .find(|r| crate::tls::fingerprint_matches(typed, &r.fingerprint))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +92,7 @@ mod tests {
             fingerprint: "ab".repeat(32),
             last_addr: "192.168.1.5:47800".parse().unwrap(),
             wake: None,
+            bridge: None,
         };
         save(&dir, r.clone()).unwrap();
         assert!(find(&dir, "casa").is_some());

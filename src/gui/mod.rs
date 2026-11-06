@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText};
 
 use crate::auth;
+use crate::bridge;
 use crate::client::{self, hosts::HostRecord};
 use crate::devices::{self, Device};
 use crate::host::{self, HostStatus};
@@ -29,6 +30,10 @@ const ACCENT: Color32 = Color32::from_rgb(0x6D, 0x4A, 0xFF);
 const OK: Color32 = Color32::from_rgb(0x2E, 0xA0, 0x43);
 const BAD: Color32 = Color32::from_rgb(0xD0, 0x3B, 0x3B);
 const MUTED: Color32 = Color32::from_rgb(0x88, 0x88, 0x90);
+
+/// "Online" marker for a host reached only through the cloud bridge.
+const VIA_BRIDGE: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), 0);
 
 pub fn run() -> anyhow::Result<()> {
     #[cfg(windows)]
@@ -104,6 +109,9 @@ struct App {
     paired_only: bool,
     own_fingerprint: String,
     lang: Lang,
+    // Cloud bridge: the form and what is saved.
+    bridge: bridge::Settings,
+    bridge_saved: bridge::Settings,
     // Security.
     security: auth::Settings,
     guard: Arc<Mutex<auth::Guard>>,
@@ -141,7 +149,10 @@ impl App {
         }));
         start_probing(&bg, shared.clone(), cc.egui_ctx.clone());
         let security = auth::load(&dir);
+        let bridge_saved = bridge::load(&dir);
         let mut app = App {
+            bridge: bridge_saved.clone(),
+            bridge_saved,
             tab: Tab::MyPcs,
             hosts: client::hosts::load(&dir),
             devices: devices::list(&dir),
@@ -175,6 +186,14 @@ impl App {
         self.hosts = client::hosts::load(&self.dir);
         self.hosts.sort_by_key(|h| h.name.to_lowercase());
         self.devices = devices::list(&self.dir);
+        // The host learns the bridge's key on first use.
+        let disk = bridge::load(&self.dir);
+        if disk.addr == self.bridge_saved.addr {
+            self.bridge_saved.fingerprint = disk.fingerprint.clone();
+            if self.bridge.addr.trim() == disk.addr {
+                self.bridge.fingerprint = disk.fingerprint;
+            }
+        }
         self.last_reload = Instant::now();
     }
 
@@ -323,6 +342,7 @@ impl App {
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 let (dot, state) = match online {
+                    Some(Some(a)) if a == VIA_BRIDGE => (OK, t(l, K::StateOnBridge)),
                     Some(Some(_)) => (OK, t(l, K::StateOn)),
                     Some(None) => (MUTED, t(l, K::StateOff)),
                     None => (MUTED, t(l, K::StateChecking)),
@@ -369,7 +389,12 @@ impl App {
                     Some(_) => t(l, K::WakeLan),
                     None => t(l, K::WakeNone),
                 };
-                ui.label(RichText::new(format!("{state} · {} · {wake}", h.last_addr)).color(MUTED));
+                let addr = if h.last_addr.ip().is_unspecified() {
+                    t(l, K::ViaBridge).to_string()
+                } else {
+                    h.last_addr.to_string()
+                };
+                ui.label(RichText::new(format!("{state} · {addr} · {wake}")).color(MUTED));
             });
         ui.add_space(4.0);
     }
@@ -380,6 +405,7 @@ impl App {
         }
         let mut open = true;
         let l = self.lang;
+        let bridge_on = self.bridge_saved.active().is_some();
         egui::Window::new(t(l, K::AddTitle))
             .collapsible(false)
             .resizable(false)
@@ -394,7 +420,11 @@ impl App {
                         ui.label(t(l, K::Address));
                         ui.add(
                             egui::TextEdit::singleline(&mut self.add_addr)
-                                .hint_text("192.168.1.20")
+                                .hint_text(if bridge_on {
+                                    format!("192.168.1.20 ({})", t(l, K::AddrHintBridge))
+                                } else {
+                                    "192.168.1.20".to_string()
+                                })
                                 .desired_width(280.0),
                         );
                         ui.end_row();
@@ -421,7 +451,7 @@ impl App {
                     .filter(|c| c.is_ascii_hexdigit())
                     .count()
                     >= 32;
-                let ready = !self.add_addr.trim().is_empty() && fp_ok;
+                let ready = (!self.add_addr.trim().is_empty() || bridge_on) && fp_ok;
                 if !fp_ok && !self.add_fp.is_empty() {
                     ui.label(RichText::new(t(l, K::FpTooShort)).color(BAD));
                 }
@@ -433,11 +463,17 @@ impl App {
                     .clicked()
                 {
                     let pw = (!self.add_password.is_empty()).then(|| self.add_password.clone());
+                    // No address: the fingerprint finds the PC on the bridge.
+                    let target = match self.add_addr.trim() {
+                        "" => self.add_fp.trim(),
+                        a => a,
+                    };
                     let fake = HostRecord {
-                        name: self.add_addr.trim().to_string(),
+                        name: target.to_string(),
                         fingerprint: self.add_fp.trim().to_string(),
                         last_addr: "0.0.0.0:0".parse().unwrap(),
                         wake: None,
+                        bridge: None,
                     };
                     self.connect(
                         &fake,
@@ -620,6 +656,12 @@ fn friendly_error(l: Lang, stderr: &str) -> String {
         t(l, K::ErrBusy).into()
     } else if text.contains("does not match") || text.contains("identity changed") {
         t(l, K::ErrFp).into()
+    } else if text.contains("not connected to the cloud bridge") {
+        t(l, K::ErrBridgeOffline).into()
+    } else if text.contains("bridge access code") {
+        t(l, K::ErrBridgeCode).into()
+    } else if text.contains("the bridge") && text.contains("does not answer") {
+        t(l, K::ErrBridgeDown).into()
     } else if text.contains("no answer") || text.contains("not answering") {
         t(l, K::ErrNoAnswer).into()
     } else if text.contains("only paired") {
@@ -678,7 +720,13 @@ fn start_probing(bg: &tokio::runtime::Runtime, shared: Arc<Mutex<Shared>>, ctx: 
                 let Ok(cfg) = client::pinned_config(&rec) else {
                     continue;
                 };
-                let up = client::probe(&rec, &cfg, Duration::from_millis(1500)).await;
+                let mut up = client::probe(&rec, &cfg, Duration::from_millis(1500)).await;
+                if up.is_none()
+                    && let Some(b) = rec.bridge.clone().or_else(|| bridge::load(&dir).active())
+                    && bridge::host_online(&b, &rec.fingerprint).await
+                {
+                    up = Some(VIA_BRIDGE);
+                }
                 shared
                     .lock()
                     .unwrap()
@@ -763,6 +811,26 @@ impl App {
                                         .color(if st.internet_ok { OK } else { MUTED }),
                                     );
                                     ui.end_row();
+                                    ui.label(t(l, K::BridgeTitle));
+                                    let (text, color) = match &st.bridge {
+                                        None => (t(l, K::BridgeOffRow).to_string(), MUTED),
+                                        Some((a, bridge::State::Online)) => {
+                                            (tf(l, K::BridgeOnline, &[("addr", a)]), OK)
+                                        }
+                                        Some((a, bridge::State::Connecting)) => {
+                                            (tf(l, K::BridgeConnecting, &[("addr", a)]), MUTED)
+                                        }
+                                        Some((a, bridge::State::Failed(e))) => (
+                                            tf(
+                                                l,
+                                                K::BridgeFailed,
+                                                &[("addr", a), ("e", &short_error(e))],
+                                            ),
+                                            BAD,
+                                        ),
+                                    };
+                                    ui.label(RichText::new(text).color(color));
+                                    ui.end_row();
                                     ui.label(t(l, K::Now));
                                     match &st.viewer {
                                         Some(v) => ui.label(
@@ -792,6 +860,9 @@ impl App {
                 }
             }
         }
+
+        ui.add_space(14.0);
+        self.bridge_section(ui);
 
         ui.add_space(14.0);
         ui.separator();
@@ -829,6 +900,79 @@ impl App {
         }
     }
 
+    /// Turn the cloud bridge on or off and say where it is.
+    fn bridge_section(&mut self, ui: &mut egui::Ui) {
+        let l = self.lang;
+        egui::Frame::group(ui.style())
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(t(l, K::BridgeTitle)).strong().size(16.0));
+                ui.label(RichText::new(t(l, K::BridgeHelp)).color(MUTED));
+                ui.checkbox(
+                    &mut self.bridge.enabled,
+                    RichText::new(t(l, K::BridgeEnabled)).strong(),
+                );
+                egui::Grid::new("bridge")
+                    .num_columns(2)
+                    .spacing([12.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(t(l, K::BridgeAddress));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.bridge.addr)
+                                .hint_text(format!("ponte.example.com:{}", bridge::DEFAULT_PORT))
+                                .desired_width(280.0),
+                        );
+                        ui.end_row();
+                        ui.label(t(l, K::BridgeToken));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.bridge.token)
+                                .password(true)
+                                .hint_text(t(l, K::BridgeTokenHint))
+                                .desired_width(280.0),
+                        );
+                        ui.end_row();
+                    });
+                if let Some(fp) = &self.bridge_saved.fingerprint
+                    && self.bridge.addr.trim() == self.bridge_saved.addr
+                {
+                    ui.label(
+                        RichText::new(tf(l, K::BridgeFp, &[("fp", &tls::display_fingerprint(fp))]))
+                            .monospace()
+                            .color(MUTED),
+                    );
+                }
+                let changed = self.bridge != self.bridge_saved;
+                if ui
+                    .add_enabled(
+                        changed,
+                        egui::Button::new(RichText::new(t(l, K::Save)).strong()),
+                    )
+                    .clicked()
+                {
+                    if self.bridge.enabled && self.bridge.addr.trim().is_empty() {
+                        self.toast(t(l, K::BridgeNeedAddr), true);
+                        return;
+                    }
+                    self.bridge.addr = self.bridge.addr.trim().to_string();
+                    // Same bridge: keep the key learned meanwhile. Another
+                    // bridge: learn its key again.
+                    let disk = bridge::load(&self.dir);
+                    self.bridge.fingerprint = (self.bridge.addr == disk.addr)
+                        .then_some(disk.fingerprint)
+                        .flatten();
+                    match bridge::save(&self.dir, &self.bridge) {
+                        Ok(()) => {
+                            self.bridge_saved = self.bridge.clone();
+                            self.toast(t(l, K::BridgeSaved), false);
+                        }
+                        Err(e) => self.toast(tf(l, K::Error, &[("e", &e.to_string())]), true),
+                    }
+                }
+            });
+    }
+
     fn start_host(&mut self) {
         let rt = match tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -847,6 +991,7 @@ impl App {
             bitrate_kbps: 8000,
             paired_only: self.paired_only,
             no_upnp: false,
+            no_bridge: false,
             status: Some(status.clone()),
             guard: self.guard.clone(),
             approvals: Some(self.approvals.clone()),
@@ -859,6 +1004,16 @@ impl App {
         });
         self.host = Some(HostRunner { rt, status });
     }
+}
+
+/// The last part of an error chain, short enough for one line.
+fn short_error(e: &str) -> String {
+    e.rsplit(": ")
+        .next()
+        .unwrap_or(e)
+        .chars()
+        .take(80)
+        .collect()
 }
 
 /// Big selectable text with a copy button.
