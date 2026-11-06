@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+argon2 = { version = "0.5", features = ["std"] }
 bincode = "1"
 clap = { version = "4.6.7", features = ["derive", "env"] }
 directories = "6.0.0"
