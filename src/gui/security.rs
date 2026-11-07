@@ -5,10 +5,11 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, RichText};
 
 use super::i18n::{K, Lang, t, tf};
+use super::theme::{self, tw};
 use super::{ACCENT, App, BAD, MUTED, OK};
 use crate::auth::{self, Strength};
 
-const WARN: Color32 = Color32::from_rgb(0xE0, 0x9A, 0x1F);
+const WARN: Color32 = tw::AMBER_500;
 
 /// Typing in progress on the Security tab.
 #[derive(Default)]
@@ -124,9 +125,7 @@ impl App {
                 let click = ui
                     .add_enabled(
                         wait == 0 && !self.sec.unlock_input.is_empty(),
-                        egui::Button::new(RichText::new(t(l, K::Unlock)).strong().size(16.0))
-                            .fill(ACCENT.gamma_multiply(0.35))
-                            .min_size(egui::vec2(240.0, 32.0)),
+                        theme::primary(t(l, K::Unlock)).min_size(egui::vec2(240.0, 32.0)),
                     )
                     .clicked();
                 if click || enter {
@@ -163,7 +162,7 @@ impl App {
                     );
                 }
                 ui.add_space(14.0);
-                self.language_menu(ui);
+                self.language_menu(ui, 160.0);
             });
         });
     }
@@ -224,9 +223,7 @@ impl App {
                 let click = ui
                     .add_enabled(
                         ready,
-                        egui::Button::new(RichText::new(t(l, K::SetupButton)).strong().size(16.0))
-                            .fill(ACCENT.gamma_multiply(0.35))
-                            .min_size(egui::vec2(260.0, 32.0)),
+                        theme::primary(t(l, K::SetupButton)).min_size(egui::vec2(260.0, 32.0)),
                     )
                     .clicked();
                 if (click || enter) && ready {
@@ -248,7 +245,7 @@ impl App {
                 ui.add_space(10.0);
                 ui.label(RichText::new(t(l, K::SetupNote)).small().color(MUTED));
                 ui.add_space(14.0);
-                self.language_menu(ui);
+                self.language_menu(ui, 160.0);
             });
         });
     }
@@ -296,19 +293,10 @@ impl App {
                 );
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(RichText::new(t(l, K::Allow)).strong())
-                                .fill(OK.gamma_multiply(0.4)),
-                        )
-                        .clicked()
-                    {
+                    if ui.add(theme::success(t(l, K::Allow))).clicked() {
                         answer = Some(true);
                     }
-                    if ui
-                        .add(egui::Button::new(t(l, K::Deny)).fill(BAD.gamma_multiply(0.3)))
-                        .clicked()
-                    {
+                    if ui.add(theme::danger(t(l, K::Deny))).clicked() {
                         answer = Some(false);
                     }
                 });
@@ -323,8 +311,7 @@ impl App {
 
     pub(super) fn security_tab(&mut self, ui: &mut egui::Ui) {
         let l = self.lang;
-        ui.heading(t(l, K::TabSecurity));
-        ui.add_space(4.0);
+        theme::page_title(ui, t(l, K::TabSecurity), None);
 
         // ── Access password ──
         section(ui, t(l, K::SecAccessTitle), |ui| {
@@ -674,15 +661,15 @@ impl App {
 }
 
 fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::group(ui.style())
-        .inner_margin(12.0)
-        .corner_radius(8.0)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(title).strong().size(16.0));
-            body(ui);
-        });
-    ui.add_space(6.0);
+    theme::card(ui, |ui| {
+        ui.label(
+            RichText::new(title)
+                .strong()
+                .size(16.0)
+                .color(tw::SLATE_900),
+        );
+        body(ui);
+    });
 }
 
 /// Four bars that fill up and change colour with the strength.
