@@ -25,10 +25,13 @@ mod i18n;
 mod security;
 use i18n::{K, Lang, t, tf};
 
-const ACCENT: Color32 = Color32::from_rgb(0x6D, 0x4A, 0xFF);
-const OK: Color32 = Color32::from_rgb(0x2E, 0xA0, 0x43);
-const BAD: Color32 = Color32::from_rgb(0xD0, 0x3B, 0x3B);
-const MUTED: Color32 = Color32::from_rgb(0x88, 0x88, 0x90);
+mod theme;
+use theme::tw;
+
+const ACCENT: Color32 = tw::INDIGO_600;
+const OK: Color32 = tw::EMERALD_600;
+const BAD: Color32 = tw::RED_600;
+const MUTED: Color32 = tw::SLATE_500;
 
 pub fn run() -> anyhow::Result<()> {
     #[cfg(windows)]
@@ -39,8 +42,8 @@ pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Magic Remote")
-            .with_inner_size([860.0, 620.0])
-            .with_min_inner_size([560.0, 420.0]),
+            .with_inner_size([980.0, 660.0])
+            .with_min_inner_size([720.0, 460.0]),
         ..Default::default()
     };
     eframe::run_native(
@@ -115,12 +118,7 @@ struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let mut style = (*cc.egui_ctx.global_style()).clone();
-        style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-        style.spacing.button_padding = egui::vec2(12.0, 6.0);
-        style.visuals.selection.bg_fill = ACCENT;
-        style.visuals.hyperlink_color = ACCENT;
-        cc.egui_ctx.set_global_style(style);
+        theme::apply(&cc.egui_ctx);
 
         let dir = tls::config_dir().unwrap_or_else(|_| PathBuf::from("."));
         let own_fingerprint = tls::load_or_create_identity(&dir)
@@ -207,64 +205,60 @@ impl eframe::App for App {
             return;
         }
 
-        egui::Panel::top("header").show(ui, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("Magic Remote")
-                        .size(22.0)
-                        .strong()
-                        .color(ACCENT),
-                );
-                ui.add_space(16.0);
-                let l = self.lang;
-                for (tab, key) in [
-                    (Tab::MyPcs, K::TabMyPcs),
-                    (Tab::Share, K::TabShare),
-                    (Tab::Wake, K::TabWake),
-                    (Tab::Security, K::TabSecurity),
-                ] {
-                    ui.selectable_value(&mut self.tab, tab, RichText::new(t(l, key)).size(15.0));
+        self.sidebar(ui);
+
+        egui::Panel::bottom("toasts")
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(tw::SLATE_50)
+                    .inner_margin(egui::Margin::symmetric(28, 10)),
+            )
+            .show(ui, |ui| {
+                let mut sh = self.shared.lock().unwrap();
+                sh.toasts
+                    .retain(|(t, _, _)| t.elapsed() < Duration::from_secs(12));
+                if sh.toasts.is_empty() {
+                    ui.label(
+                        RichText::new(tf(self.lang, K::ThisFp, &[("fp", &self.own_fingerprint)]))
+                            .small()
+                            .color(MUTED),
+                    );
                 }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    self.language_menu(ui);
-                    if self.security.app_lock_hash.is_some()
-                        && ui
-                            .button(RichText::new("🔒").size(20.0))
-                            .on_hover_text(t(l, K::LockNow))
-                            .clicked()
-                    {
-                        self.lock();
-                    }
-                });
+                for (_, text, err) in sh.toasts.iter().rev().take(3) {
+                    let (fg, bg) = if *err {
+                        (BAD, tw::RED_50)
+                    } else {
+                        (OK, tw::EMERALD_50)
+                    };
+                    egui::Frame::new()
+                        .fill(bg)
+                        .stroke(egui::Stroke::new(1.0, fg.gamma_multiply(0.3)))
+                        .corner_radius(8)
+                        .inner_margin(egui::Margin::symmetric(12, 6))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(RichText::new(text).color(fg));
+                        });
+                }
             });
-            ui.add_space(4.0);
-        });
 
-        egui::Panel::bottom("toasts").show(ui, |ui| {
-            let mut sh = self.shared.lock().unwrap();
-            sh.toasts
-                .retain(|(t, _, _)| t.elapsed() < Duration::from_secs(12));
-            if sh.toasts.is_empty() {
-                ui.label(
-                    RichText::new(tf(self.lang, K::ThisFp, &[("fp", &self.own_fingerprint)]))
-                        .small()
-                        .color(MUTED),
-                );
-            }
-            for (_, text, err) in sh.toasts.iter().rev().take(3) {
-                ui.label(RichText::new(text).color(if *err { BAD } else { OK }));
-            }
-        });
-
-        egui::CentralPanel::default().show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| match self.tab {
-                Tab::MyPcs => self.my_pcs(ui),
-                Tab::Share => self.share(ui),
-                Tab::Wake => self.wake_tab(ui),
-                Tab::Security => self.security_tab(ui),
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::new()
+                    .fill(tw::SLATE_50)
+                    .inner_margin(egui::Margin::symmetric(28, 24)),
+            )
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| match self.tab {
+                        Tab::MyPcs => self.my_pcs(ui),
+                        Tab::Share => self.share(ui),
+                        Tab::Wake => self.wake_tab(ui),
+                        Tab::Security => self.security_tab(ui),
+                    });
             });
-        });
 
         self.password_dialog(&ctx);
         self.add_dialog(&ctx);
@@ -274,10 +268,76 @@ impl eframe::App for App {
 // ───────────────────────────── I miei PC ─────────────────────────────
 
 impl App {
-    fn language_menu(&mut self, ui: &mut egui::Ui) {
+    /// Menu on the left: logo, pages, then language and lock at the bottom.
+    fn sidebar(&mut self, ui: &mut egui::Ui) {
+        let l = self.lang;
+        egui::Panel::left("sidebar")
+            .resizable(false)
+            .exact_size(theme::SIDEBAR_WIDTH)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(tw::SLATE_900)
+                    .inner_margin(egui::Margin::symmetric(12, 18)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(4.0);
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
+                    ui.painter().rect_filled(rect, 8.0, tw::INDIGO_600);
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        "M",
+                        egui::FontId::proportional(18.0),
+                        tw::WHITE,
+                    );
+                    ui.label(
+                        RichText::new("Magic Remote")
+                            .size(17.0)
+                            .strong()
+                            .color(tw::WHITE),
+                    );
+                });
+                ui.add_space(22.0);
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for (tab, icon, key) in [
+                    (Tab::MyPcs, "🖥", K::TabMyPcs),
+                    (Tab::Share, "📡", K::TabShare),
+                    (Tab::Wake, "⏰", K::TabWake),
+                    (Tab::Security, "🛡", K::TabSecurity),
+                ] {
+                    if theme::nav_item(ui, icon, t(l, key), self.tab == tab) {
+                        self.tab = tab;
+                    }
+                }
+
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    let sharing = self
+                        .host
+                        .as_ref()
+                        .is_some_and(|r| r.status.lock().unwrap().ready);
+                    if self.security.app_lock_hash.is_some()
+                        && theme::nav_item(ui, "🔒", t(l, K::LockNow), false)
+                    {
+                        self.lock();
+                    }
+                    let w = ui.available_width();
+                    self.language_menu(ui, w);
+                    if sharing {
+                        theme::badge(ui, t(l, K::TabShare), tw::WHITE, tw::EMERALD_600);
+                    }
+                });
+            });
+    }
+
+    fn language_menu(&mut self, ui: &mut egui::Ui, width: f32) {
         let before = self.lang;
         egui::ComboBox::from_id_salt("lang")
-            .selected_text(self.lang.native_name())
+            .width(width)
+            .selected_text(format!("🌐  {}", self.lang.native_name()))
             .show_ui(ui, |ui| {
                 for lang in Lang::ALL {
                     ui.selectable_value(&mut self.lang, lang, lang.native_name());
@@ -292,20 +352,34 @@ impl App {
 
     fn my_pcs(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.heading(t(self.lang, K::TabMyPcs));
+            ui.label(
+                RichText::new(t(self.lang, K::TabMyPcs))
+                    .size(24.0)
+                    .strong()
+                    .color(tw::SLATE_900),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .button(RichText::new(t(self.lang, K::AddPc)).color(ACCENT))
-                    .clicked()
-                {
+                if ui.add(theme::primary(t(self.lang, K::AddPc))).clicked() {
                     self.show_add = true;
                 }
             });
         });
+        ui.add_space(10.0);
         if self.hosts.is_empty() {
-            ui.add_space(20.0);
-            ui.label(t(self.lang, K::NoPcsYet));
-            ui.label(RichText::new(t(self.lang, K::NoPcsHelp)).color(MUTED));
+            theme::card(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(16.0);
+                    ui.label(RichText::new("🖥").size(36.0).color(tw::SLATE_400));
+                    ui.label(
+                        RichText::new(t(self.lang, K::NoPcsYet))
+                            .strong()
+                            .size(16.0)
+                            .color(tw::SLATE_900),
+                    );
+                    ui.label(RichText::new(t(self.lang, K::NoPcsHelp)).color(MUTED));
+                    ui.add_space(16.0);
+                });
+            });
             return;
         }
         let hosts = self.hosts.clone();
@@ -323,61 +397,55 @@ impl App {
             )
         };
         let l = self.lang;
-        egui::Frame::group(ui.style())
-            .inner_margin(12.0)
-            .corner_radius(8.0)
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let (dot, state) = match online {
-                    Some(Some(_)) => (OK, t(l, K::StateOn)),
-                    Some(None) => (MUTED, t(l, K::StateOff)),
-                    None => (MUTED, t(l, K::StateChecking)),
-                };
-                ui.horizontal(|ui| {
-                    let (rect, _) =
-                        ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 6.0, dot);
-                    ui.label(RichText::new(&h.name).size(17.0).strong());
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| match job {
-                            Some(Job::Waking) => {
-                                ui.label(t(l, K::Waking));
-                                ui.spinner();
+        theme::card(ui, |ui| {
+            let (dot, state) = match online {
+                Some(Some(_)) => (OK, t(l, K::StateOn)),
+                Some(None) => (MUTED, t(l, K::StateOff)),
+                None => (MUTED, t(l, K::StateChecking)),
+            };
+            ui.horizontal(|ui| {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+                ui.painter().circle_filled(rect.center(), 6.0, dot);
+                ui.label(
+                    RichText::new(&h.name)
+                        .size(17.0)
+                        .strong()
+                        .color(tw::SLATE_900),
+                );
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| match job {
+                        Some(Job::Waking) => {
+                            ui.label(t(l, K::Waking));
+                            ui.spinner();
+                        }
+                        Some(Job::Connecting) => {
+                            ui.label(t(l, K::Connecting));
+                            ui.spinner();
+                        }
+                        None => {
+                            let is_on = matches!(online, Some(Some(_)));
+                            if ui.add(theme::primary(t(l, K::Connect))).clicked() {
+                                self.connect(h, None, false, None);
                             }
-                            Some(Job::Connecting) => {
-                                ui.label(t(l, K::Connecting));
-                                ui.spinner();
+                            if h.wake.is_some()
+                                && !is_on
+                                && ui.button(t(l, K::WakeAndConnect)).clicked()
+                            {
+                                self.wake_and_connect(h);
                             }
-                            None => {
-                                let is_on = matches!(online, Some(Some(_)));
-                                if ui
-                                    .add(
-                                        egui::Button::new(RichText::new(t(l, K::Connect)).strong())
-                                            .fill(ACCENT.gamma_multiply(0.35)),
-                                    )
-                                    .clicked()
-                                {
-                                    self.connect(h, None, false, None);
-                                }
-                                if h.wake.is_some()
-                                    && !is_on
-                                    && ui.button(t(l, K::WakeAndConnect)).clicked()
-                                {
-                                    self.wake_and_connect(h);
-                                }
-                            }
-                        },
-                    );
-                });
-                let wake = match &h.wake {
-                    Some(w) if w.public.is_some() => t(l, K::WakeInternet),
-                    Some(_) => t(l, K::WakeLan),
-                    None => t(l, K::WakeNone),
-                };
-                ui.label(RichText::new(format!("{state} · {} · {wake}", h.last_addr)).color(MUTED));
+                        }
+                    },
+                );
             });
-        ui.add_space(4.0);
+            let wake = match &h.wake {
+                Some(w) if w.public.is_some() => t(l, K::WakeInternet),
+                Some(_) => t(l, K::WakeLan),
+                None => t(l, K::WakeNone),
+            };
+            ui.label(RichText::new(format!("{state} · {} · {wake}", h.last_addr)).color(MUTED));
+        });
     }
 
     fn add_dialog(&mut self, ctx: &egui::Context) {
@@ -432,10 +500,7 @@ impl App {
                     ui.label(RichText::new(t(l, K::FpTooShort)).color(BAD));
                 }
                 if ui
-                    .add_enabled(
-                        ready,
-                        egui::Button::new(RichText::new(t(l, K::Connect)).strong()),
-                    )
+                    .add_enabled(ready, theme::primary(t(l, K::Connect)))
                     .clicked()
                 {
                     let pw = (!self.add_password.is_empty()).then(|| self.add_password.clone());
@@ -485,7 +550,7 @@ impl App {
                         .desired_width(260.0),
                 );
                 ui.checkbox(&mut pair, t(l, K::PairShort));
-                go = ui.button(t(l, K::Connect)).clicked()
+                go = ui.add(theme::primary(t(l, K::Connect))).clicked()
                     || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
             });
         if go && !self.pw_input.is_empty() {
@@ -702,20 +767,12 @@ fn start_probing(bg: &tokio::runtime::Runtime, shared: Arc<Mutex<Shared>>, ctx: 
 impl App {
     fn share(&mut self, ui: &mut egui::Ui) {
         let l = self.lang;
-        ui.heading(t(l, K::TabShare));
-        ui.label(RichText::new(t(l, K::ShareHelp)).color(MUTED));
-        ui.add_space(8.0);
+        theme::page_title(ui, t(l, K::TabShare), Some(t(l, K::ShareHelp)));
 
         match &self.host {
             None => {
                 ui.checkbox(&mut self.paired_only, t(l, K::PairedOnlyCheckbox));
-                if ui
-                    .add(
-                        egui::Button::new(RichText::new(t(l, K::StartSharing)).size(16.0).strong())
-                            .fill(ACCENT.gamma_multiply(0.35)),
-                    )
-                    .clicked()
-                {
+                if ui.add(theme::primary(t(l, K::StartSharing))).clicked() {
                     self.start_host();
                 }
             }
@@ -729,96 +786,102 @@ impl App {
                         ui.label(t(l, K::Starting));
                     });
                 } else {
-                    egui::Frame::group(ui.style())
-                        .inner_margin(14.0)
-                        .corner_radius(8.0)
-                        .show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            egui::Grid::new("share")
-                                .num_columns(2)
-                                .spacing([16.0, 10.0])
-                                .show(ui, |ui| {
-                                    ui.label(t(l, K::Address));
-                                    let addr = st
-                                        .lan_ip
-                                        .map(|i| i.to_string())
-                                        .unwrap_or_else(|| "?".into());
-                                    copyable(ui, &addr, 20.0, l);
-                                    ui.end_row();
-                                    ui.label(t(l, K::Fingerprint));
-                                    copyable(ui, &st.fingerprint, 16.0, l);
-                                    ui.end_row();
-                                    ui.label(t(l, K::Password));
-                                    match &st.password {
-                                        Some(_) if self.security.access_hash.is_some() => {
-                                            ui.label(t(l, K::PasswordFixed));
-                                        }
-                                        Some(p) => copyable(ui, p, 20.0, l),
-                                        None => {
-                                            ui.label(t(l, K::PasswordDisabled));
-                                        }
+                    theme::card(ui, |ui| {
+                        egui::Grid::new("share")
+                            .num_columns(2)
+                            .spacing([16.0, 10.0])
+                            .show(ui, |ui| {
+                                ui.label(t(l, K::Address));
+                                let addr = st
+                                    .lan_ip
+                                    .map(|i| i.to_string())
+                                    .unwrap_or_else(|| "?".into());
+                                copyable(ui, &addr, 20.0, l);
+                                ui.end_row();
+                                ui.label(t(l, K::Fingerprint));
+                                copyable(ui, &st.fingerprint, 16.0, l);
+                                ui.end_row();
+                                ui.label(t(l, K::Password));
+                                match &st.password {
+                                    Some(_) if self.security.access_hash.is_some() => {
+                                        ui.label(t(l, K::PasswordFixed));
                                     }
-                                    ui.end_row();
-                                    ui.label(t(l, K::FromInternet));
-                                    ui.label(
-                                        RichText::new(router_text(
-                                            l,
-                                            st.router.as_ref(),
-                                            &st.internet,
-                                        ))
+                                    Some(p) => copyable(ui, p, 20.0, l),
+                                    None => {
+                                        ui.label(t(l, K::PasswordDisabled));
+                                    }
+                                }
+                                ui.end_row();
+                                ui.label(t(l, K::FromInternet));
+                                ui.label(
+                                    RichText::new(router_text(l, st.router.as_ref(), &st.internet))
                                         .color(if st.internet_ok { OK } else { MUTED }),
-                                    );
-                                    ui.end_row();
-                                    ui.label(t(l, K::Now));
-                                    match &st.viewer {
-                                        Some(v) => ui.label(
-                                            RichText::new(tf(l, K::ViewerConnected, &[("v", v)]))
-                                                .color(OK),
-                                        ),
-                                        None => ui.label(
-                                            RichText::new(t(l, K::WaitingConnections)).color(MUTED),
-                                        ),
-                                    };
-                                    ui.end_row();
-                                });
-                        });
+                                );
+                                ui.end_row();
+                                ui.label(t(l, K::Now));
+                                match &st.viewer {
+                                    Some(v) => ui.label(
+                                        RichText::new(tf(l, K::ViewerConnected, &[("v", v)]))
+                                            .color(OK),
+                                    ),
+                                    None => ui.label(
+                                        RichText::new(t(l, K::WaitingConnections)).color(MUTED),
+                                    ),
+                                };
+                                ui.end_row();
+                            });
+                    });
                 }
                 ui.add_space(6.0);
-                if ui.button(t(l, K::StopSharing)).clicked()
+                if ui.add(theme::danger(t(l, K::StopSharing))).clicked()
                     && let Some(r) = self.host.take()
                 {
                     r.rt.shutdown_background();
                 }
                 if !st.events.is_empty() {
-                    ui.add_space(6.0);
-                    ui.label(RichText::new(t(l, K::Activity)).strong());
-                    for e in st.events.iter().rev().take(6) {
-                        ui.label(RichText::new(e).color(MUTED));
-                    }
+                    ui.add_space(10.0);
+                    theme::card(ui, |ui| {
+                        ui.label(
+                            RichText::new(t(l, K::Activity))
+                                .strong()
+                                .color(tw::SLATE_900),
+                        );
+                        for e in st.events.iter().rev().take(6) {
+                            ui.label(RichText::new(e).color(MUTED));
+                        }
+                    });
                 }
             }
         }
 
         ui.add_space(14.0);
-        ui.separator();
-        ui.label(RichText::new(t(l, K::PairedPcs)).strong().size(16.0));
-        if self.devices.is_empty() {
-            ui.label(RichText::new(t(l, K::NoPaired)).color(MUTED));
-        }
         let mut revoke = None;
-        for d in &self.devices {
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(&d.name).strong());
-                ui.label(
-                    RichText::new(tls::display_fingerprint(&d.fingerprint)[..19].to_string())
-                        .monospace()
-                        .color(MUTED),
-                );
-                if ui.small_button(t(l, K::Revoke)).clicked() {
-                    revoke = Some(d.fingerprint.clone());
-                }
-            });
-        }
+        theme::card(ui, |ui| {
+            ui.label(
+                RichText::new(t(l, K::PairedPcs))
+                    .strong()
+                    .size(16.0)
+                    .color(tw::SLATE_900),
+            );
+            if self.devices.is_empty() {
+                ui.label(RichText::new(t(l, K::NoPaired)).color(MUTED));
+            }
+            for d in &self.devices {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&d.name).strong());
+                    ui.label(
+                        RichText::new(tls::display_fingerprint(&d.fingerprint)[..19].to_string())
+                            .monospace()
+                            .color(MUTED),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button(t(l, K::Revoke)).clicked() {
+                            revoke = Some(d.fingerprint.clone());
+                        }
+                    });
+                });
+            }
+        });
         if let Some(fp) = revoke {
             match devices::revoke(&self.dir, &fp) {
                 Ok(gone) => self.toast(
@@ -895,9 +958,7 @@ fn copyable(ui: &mut egui::Ui, text: &str, size: f32, l: Lang) {
 impl App {
     fn wake_tab(&mut self, ui: &mut egui::Ui) {
         let l = self.lang;
-        ui.heading(t(l, K::WakeTitle));
-        ui.label(RichText::new(t(l, K::WakeHelp)).color(MUTED));
-        ui.add_space(8.0);
+        theme::page_title(ui, t(l, K::WakeTitle), Some(t(l, K::WakeHelp)));
         let (checking, report) = {
             let sh = self.shared.lock().unwrap();
             (
@@ -909,7 +970,7 @@ impl App {
         };
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!checking, egui::Button::new(t(l, K::CheckThisPc)))
+                .add_enabled(!checking, theme::primary(t(l, K::CheckThisPc)))
                 .clicked()
             {
                 self.run_wake_check(false);
@@ -939,18 +1000,21 @@ impl App {
                     setup::Verdict::LanOnly => (t(l, K::VerdictLan), ACCENT),
                     setup::Verdict::NotReady => (t(l, K::VerdictNotReady), BAD),
                 };
-                ui.label(RichText::new(text).size(17.0).strong().color(color));
-                for c in &r.checks {
-                    let (mark, color) = match c.ok {
-                        Some(true) => ("✓", OK),
-                        Some(false) => ("✗", BAD),
-                        None => ("•", MUTED),
-                    };
-                    ui.horizontal_wrapped(|ui| {
-                        ui.label(RichText::new(mark).color(color).strong());
-                        ui.label(&c.text);
-                    });
-                }
+                theme::card(ui, |ui| {
+                    ui.label(RichText::new(text).size(17.0).strong().color(color));
+                    ui.add_space(4.0);
+                    for c in &r.checks {
+                        let (mark, color) = match c.ok {
+                            Some(true) => ("✓", OK),
+                            Some(false) => ("✗", BAD),
+                            None => ("•", MUTED),
+                        };
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(RichText::new(mark).color(color).strong());
+                            ui.label(&c.text);
+                        });
+                    }
+                });
             }
         }
     }
