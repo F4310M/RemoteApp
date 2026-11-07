@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use tokio::sync::{Semaphore, mpsc, oneshot};
 
+use crate::auth::{self, Guard, Secret};
 use crate::proto::{self, ClientMsg, HostMsg, PROTOCOL_VERSION, VideoFrame};
 use crate::wake::setup::{self as reach, Router};
 use crate::{devices, tls, wake};
@@ -28,7 +29,31 @@ pub struct HostOptions {
     pub no_upnp: bool,
     /// Filled in for the GUI; `None` from the command line.
     pub status: Option<Arc<Mutex<HostStatus>>>,
+    /// Wrong-password bookkeeping, shared with the GUI.
+    pub guard: Arc<Mutex<Guard>>,
+    /// Where the GUI picks up "may this PC connect?" questions. `None`: ask
+    /// in the terminal.
+    pub approvals: Option<Arc<Mutex<Option<Approval>>>>,
 }
+
+/// A device that typed the right password and waits for the person at this
+/// PC to let it in.
+pub struct Approval {
+    pub who: String,
+    pub asked: Instant,
+    reply: Option<oneshot::Sender<bool>>,
+}
+
+impl Approval {
+    pub fn answer(&mut self, allow: bool) {
+        if let Some(r) = self.reply.take() {
+            let _ = r.send(allow);
+        }
+    }
+}
+
+/// How long the person at the host has to answer.
+pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What the host is doing, for the GUI.
 #[derive(Debug, Clone, Default)]
@@ -113,6 +138,8 @@ pub async fn run(opts: HostOptions) -> Result<()> {
             "  Password:    (disabled: only paired devices, {} known)",
             devices::list(&dir).len()
         );
+    } else if opts.password.is_none() && auth::load(&dir).access_hash.is_some() {
+        println!("  Password:    (fixed, chosen with `magicremote set-password`)");
     } else {
         println!("  Password:    {password}");
     }
@@ -210,6 +237,32 @@ async fn session(
         )
         .await;
     } else {
+        // Read each time, so changes made in the app apply at once.
+        let settings = auth::load(&dir);
+        let secret = match (&opts.password, &settings.access_hash) {
+            (Some(p), _) => Secret::Plain(p.clone()),
+            (None, Some(h)) => Secret::Hashed(h.clone()),
+            (None, None) => Secret::Plain(password.to_string()),
+        };
+        let wait = opts
+            .guard
+            .lock()
+            .unwrap()
+            .check(remote.ip(), Instant::now());
+        if let Err(wait) = wait {
+            note(
+                &opts.status,
+                format!("✗ refused {who}: too many wrong passwords"),
+            );
+            return reject(
+                &mut ctl_send,
+                format!(
+                    "too many wrong passwords: try again in {}",
+                    auth::short_duration(wait)
+                ),
+            )
+            .await;
+        }
         proto::write_msg(&mut ctl_send, &HostMsg::NeedPassword).await?;
         // The person on the other side may be typing it.
         let answer = tokio::time::timeout(
@@ -218,11 +271,57 @@ async fn session(
         )
         .await
         .context("client did not send the password")??;
-        let ok = matches!(&answer, Some(ClientMsg::Password(p)) if constant_time_eq(p.as_bytes(), password.as_bytes()));
+        let typed = match answer {
+            Some(ClientMsg::Password(p)) => p,
+            _ => String::new(),
+        };
+        let ok = tokio::task::spawn_blocking(move || secret.verify(&typed)).await?;
         if !ok {
-            // Slow down guessing.
+            let lock = opts
+                .guard
+                .lock()
+                .unwrap()
+                .failed(remote.ip(), Instant::now());
+            // Slow down guessing (we hold the only seat meanwhile).
             tokio::time::sleep(Duration::from_secs(2)).await;
-            return reject(&mut ctl_send, "wrong password".into()).await;
+            return match lock {
+                Some(d) => {
+                    note(
+                        &opts.status,
+                        format!(
+                            "✗ {} locked out for {} after {} wrong passwords",
+                            remote.ip(),
+                            auth::short_duration(d),
+                            auth::MAX_TRIES_PER_IP
+                        ),
+                    );
+                    reject(
+                        &mut ctl_send,
+                        format!(
+                            "wrong password; too many wrong passwords: try again in {}",
+                            auth::short_duration(d)
+                        ),
+                    )
+                    .await
+                }
+                None => {
+                    note(&opts.status, format!("✗ wrong password from {who}"));
+                    reject(&mut ctl_send, "wrong password".into()).await
+                }
+            };
+        }
+        opts.guard.lock().unwrap().succeeded(remote.ip());
+        if settings.approve_new {
+            proto::write_msg(&mut ctl_send, &HostMsg::WaitingApproval).await?;
+            note(&opts.status, format!("? {who} asks to connect"));
+            if !ask_approval(opts, &who).await {
+                note(&opts.status, format!("✗ {who} not allowed"));
+                return reject(
+                    &mut ctl_send,
+                    "the person at the host did not allow the connection".into(),
+                )
+                .await;
+            }
         }
         if pair {
             devices::pair(&dir, &client_fp, &name)?;
@@ -416,8 +515,54 @@ async fn reject(send: &mut quinn::SendStream, reason: String) -> Result<()> {
     bail!("rejected: {reason}");
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+/// Asks the person at this PC whether `who` may connect: in the app when it
+/// runs the host, else in the terminal. No answer means no.
+async fn ask_approval(opts: &HostOptions, who: &str) -> bool {
+    let (tx, rx) = oneshot::channel();
+    match &opts.approvals {
+        Some(slot) => {
+            {
+                let mut s = slot.lock().unwrap();
+                // Only one viewer at a time, so at most one question.
+                if let Some(old) = s.as_mut() {
+                    old.answer(false);
+                }
+                *s = Some(Approval {
+                    who: who.to_string(),
+                    asked: Instant::now(),
+                    reply: Some(tx),
+                });
+            }
+            let allowed = matches!(
+                tokio::time::timeout(APPROVAL_TIMEOUT, rx).await,
+                Ok(Ok(true))
+            );
+            *slot.lock().unwrap() = None;
+            allowed
+        }
+        None => {
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() {
+                return false;
+            }
+            let question = format!("  {who} wants to control this PC. Allow? [y/N] ");
+            std::thread::spawn(move || {
+                use std::io::Write;
+                print!("{question}");
+                let _ = std::io::stdout().flush();
+                let mut s = String::new();
+                let _ = std::io::stdin().read_line(&mut s);
+                let _ = tx.send(matches!(
+                    s.trim(),
+                    "y" | "Y" | "s" | "S" | "yes" | "si" | "sì"
+                ));
+            });
+            matches!(
+                tokio::time::timeout(APPROVAL_TIMEOUT, rx).await,
+                Ok(Ok(true))
+            )
+        }
+    }
 }
 
 fn random_password() -> String {
@@ -451,8 +596,8 @@ mod tests {
         let p = random_password();
         assert_eq!(p.len(), 10);
         assert_ne!(p, random_password());
-        assert!(constant_time_eq(p.as_bytes(), p.as_bytes()));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"abcd"));
+        assert!(auth::constant_time_eq(p.as_bytes(), p.as_bytes()));
+        assert!(!auth::constant_time_eq(b"abc", b"abd"));
+        assert!(!auth::constant_time_eq(b"abc", b"abcd"));
     }
 }

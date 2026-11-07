@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Color32, RichText};
 
+use crate::auth;
 use crate::client::{self, hosts::HostRecord};
 use crate::devices::{self, Device};
 use crate::host::{self, HostStatus};
@@ -21,6 +22,7 @@ use crate::tls;
 use crate::wake::setup;
 
 mod i18n;
+mod security;
 use i18n::{K, Lang, t, tf};
 
 const ACCENT: Color32 = Color32::from_rgb(0x6D, 0x4A, 0xFF);
@@ -37,7 +39,7 @@ pub fn run() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Magic Remote")
-            .with_inner_size([760.0, 560.0])
+            .with_inner_size([860.0, 620.0])
             .with_min_inner_size([560.0, 420.0]),
         ..Default::default()
     };
@@ -54,6 +56,7 @@ enum Tab {
     MyPcs,
     Share,
     Wake,
+    Security,
 }
 
 /// Something running in the background that the UI shows.
@@ -101,6 +104,13 @@ struct App {
     paired_only: bool,
     own_fingerprint: String,
     lang: Lang,
+    // Security.
+    security: auth::Settings,
+    guard: Arc<Mutex<auth::Guard>>,
+    approvals: Arc<Mutex<Option<host::Approval>>>,
+    locked: bool,
+    last_activity: Instant,
+    sec: security::Form,
 }
 
 impl App {
@@ -130,6 +140,7 @@ impl App {
             wake_checking: false,
         }));
         start_probing(&bg, shared.clone(), cc.egui_ctx.clone());
+        let security = auth::load(&dir);
         let mut app = App {
             tab: Tab::MyPcs,
             hosts: client::hosts::load(&dir),
@@ -148,8 +159,16 @@ impl App {
             paired_only: false,
             own_fingerprint,
             lang: load_lang(),
+            security,
+            guard: Default::default(),
+            approvals: Default::default(),
+            locked: false,
+            last_activity: Instant::now(),
+            sec: Default::default(),
         };
         app.hosts.sort_by_key(|h| h.name.to_lowercase());
+        app.sec.focus_unlock = true;
+        app.lock(); // only if a lock PIN is set
         app
     }
 
@@ -176,6 +195,17 @@ impl eframe::App for App {
         }
         let ctx = ui.ctx().clone();
         ctx.request_repaint_after(Duration::from_secs(1));
+        self.check_auto_lock(&ctx);
+        self.approval_dialog(&ctx);
+        if self.locked {
+            self.lock_screen(ui);
+            return;
+        }
+        // First start (or no PIN yet): create one before anything else.
+        if self.security.app_lock_hash.is_none() {
+            self.setup_screen(ui);
+            return;
+        }
 
         egui::Panel::top("header").show(ui, |ui| {
             ui.add_space(6.0);
@@ -192,22 +222,19 @@ impl eframe::App for App {
                     (Tab::MyPcs, K::TabMyPcs),
                     (Tab::Share, K::TabShare),
                     (Tab::Wake, K::TabWake),
+                    (Tab::Security, K::TabSecurity),
                 ] {
                     ui.selectable_value(&mut self.tab, tab, RichText::new(t(l, key)).size(15.0));
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let before = self.lang;
-                    egui::ComboBox::from_id_salt("lang")
-                        .selected_text(self.lang.native_name())
-                        .show_ui(ui, |ui| {
-                            for lang in Lang::ALL {
-                                ui.selectable_value(&mut self.lang, lang, lang.native_name());
-                            }
-                        })
-                        .response
-                        .on_hover_text(t(self.lang, K::Language));
-                    if self.lang != before {
-                        save_lang(self.lang);
+                    self.language_menu(ui);
+                    if self.security.app_lock_hash.is_some()
+                        && ui
+                            .button(RichText::new("🔒").size(20.0))
+                            .on_hover_text(t(l, K::LockNow))
+                            .clicked()
+                    {
+                        self.lock();
                     }
                 });
             });
@@ -235,6 +262,7 @@ impl eframe::App for App {
                 Tab::MyPcs => self.my_pcs(ui),
                 Tab::Share => self.share(ui),
                 Tab::Wake => self.wake_tab(ui),
+                Tab::Security => self.security_tab(ui),
             });
         });
 
@@ -246,6 +274,22 @@ impl eframe::App for App {
 // ───────────────────────────── I miei PC ─────────────────────────────
 
 impl App {
+    fn language_menu(&mut self, ui: &mut egui::Ui) {
+        let before = self.lang;
+        egui::ComboBox::from_id_salt("lang")
+            .selected_text(self.lang.native_name())
+            .show_ui(ui, |ui| {
+                for lang in Lang::ALL {
+                    ui.selectable_value(&mut self.lang, lang, lang.native_name());
+                }
+            })
+            .response
+            .on_hover_text(t(self.lang, K::Language));
+        if self.lang != before {
+            save_lang(self.lang);
+        }
+    }
+
     fn my_pcs(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading(t(self.lang, K::TabMyPcs));
@@ -470,13 +514,15 @@ impl App {
         if let Some(fp) = &fingerprint {
             cmd.arg("--fingerprint").arg(fp);
         }
-        match password {
-            Some(p) => cmd.env("MAGICREMOTE_PASSWORD", p),
-            None => cmd.env_remove("MAGICREMOTE_PASSWORD"),
-        };
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
+        // The password goes through a pipe: not visible in the process list
+        // or environment.
+        cmd.env_remove("MAGICREMOTE_PASSWORD");
+        if password.is_some() {
+            cmd.arg("--password-stdin").stdin(Stdio::piped());
+        } else {
+            cmd.stdin(Stdio::null());
+        }
+        cmd.stdout(Stdio::null()).stderr(Stdio::piped());
         let key = h.fingerprint.clone();
         let name = h.name.clone();
         let shared = self.shared.clone();
@@ -487,7 +533,13 @@ impl App {
             .jobs
             .insert(key.clone(), Job::Connecting);
         std::thread::spawn(move || {
-            let result = cmd.spawn().and_then(|c| c.wait_with_output());
+            let result = cmd.spawn().and_then(|mut c| {
+                if let (Some(p), Some(mut stdin)) = (password, c.stdin.take()) {
+                    use std::io::Write;
+                    writeln!(stdin, "{p}")?;
+                }
+                c.wait_with_output()
+            });
             let mut sh = shared.lock().unwrap();
             sh.jobs.remove(&key);
             match result {
@@ -559,7 +611,16 @@ fn friendly_error(l: Lang, stderr: &str) -> String {
         .filter(|l| !l.contains(" WARN ") && !l.trim().is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    if text.contains("wrong password") {
+    if let Some(i) = text.find("try again in ") {
+        let wait = text[i + 13..]
+            .split(['\n', ',', ';'])
+            .next()
+            .unwrap_or("")
+            .trim();
+        tf(l, K::ErrLocked, &[("wait", wait)])
+    } else if text.contains("did not allow") {
+        t(l, K::ErrDeclined).into()
+    } else if text.contains("wrong password") {
         t(l, K::ErrWrongPw).into()
     } else if text.contains("busy") {
         t(l, K::ErrBusy).into()
@@ -689,6 +750,9 @@ impl App {
                                     ui.end_row();
                                     ui.label(t(l, K::Password));
                                     match &st.password {
+                                        Some(_) if self.security.access_hash.is_some() => {
+                                            ui.label(t(l, K::PasswordFixed));
+                                        }
                                         Some(p) => copyable(ui, p, 20.0, l),
                                         None => {
                                             ui.label(t(l, K::PasswordDisabled));
@@ -790,6 +854,8 @@ impl App {
             paired_only: self.paired_only,
             no_upnp: false,
             status: Some(status.clone()),
+            guard: self.guard.clone(),
+            approvals: Some(self.approvals.clone()),
         };
         let st = status.clone();
         rt.spawn(async move {
@@ -971,5 +1037,16 @@ mod tests {
                 .contains("già collegato")
         );
         assert!(friendly_error(Lang::De, "Error: something odd").contains("something odd"));
+        assert_eq!(
+            friendly_error(
+                Lang::It,
+                "Error: the host refused the connection: wrong password; too many wrong passwords: try again in 15 min\n"
+            ),
+            "troppe password sbagliate: riprova tra 15 min"
+        );
+        assert!(
+            friendly_error(Lang::En, "Error: the host refused the connection: the person at the host did not allow the connection")
+                .contains("did not allow")
+        );
     }
 }

@@ -108,7 +108,7 @@ pub fn load_or_create_identity(dir: &Path) -> Result<HostIdentity> {
     })
 }
 
-fn write_private(path: &Path, data: &[u8]) -> Result<()> {
+pub fn write_private(path: &Path, data: &[u8]) -> Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;

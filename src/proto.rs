@@ -9,7 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const ALPN: &[u8] = b"magicremote/3";
 pub const DEFAULT_PORT: u16 = 47800;
 /// Upper bound for a single control message (keeps a broken peer from
@@ -71,6 +71,9 @@ pub enum ClientMsg {
 pub enum HostMsg {
     /// This device's key is not authorized yet: send the password.
     NeedPassword,
+    /// The password was right; now the person at the host must allow the
+    /// connection. The next message is [`HostMsg::Welcome`] or [`HostMsg::Rejected`].
+    WaitingApproval,
     /// `paired` is true when this device is (now) authorized by key.
     /// `wake` tells the client how to wake this host from standby later.
     Welcome {

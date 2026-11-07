@@ -205,6 +205,10 @@ async fn connect(
         proto::write_msg(&mut ctl_send, &ClientMsg::Password(password)).await?;
         reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv).await?;
     }
+    if let Some(HostMsg::WaitingApproval) = reply {
+        println!("  Waiting for the person at the host to allow the connection...");
+        reply = proto::read_msg::<_, HostMsg>(&mut ctl_recv).await?;
+    }
     let (screen, host_name) = match reply {
         Some(HostMsg::Welcome {
             screen_width,
@@ -230,7 +234,9 @@ async fn connect(
             ((screen_width, screen_height), host_name)
         }
         Some(HostMsg::Rejected { reason }) => bail!("the host refused the connection: {reason}"),
-        Some(HostMsg::NeedPassword) => bail!("the host asked for the password twice"),
+        Some(HostMsg::NeedPassword | HostMsg::WaitingApproval) => {
+            bail!("the host sent an unexpected message")
+        }
         None => bail!("the host closed the connection"),
     };
     // Only remember a host once it accepted us.
