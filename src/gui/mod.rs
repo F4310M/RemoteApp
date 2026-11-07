@@ -167,6 +167,7 @@ impl App {
             sec: Default::default(),
         };
         app.hosts.sort_by_key(|h| h.name.to_lowercase());
+        app.sec.focus_unlock = true;
         app.lock(); // only if a lock PIN is set
         app
     }
@@ -198,6 +199,11 @@ impl eframe::App for App {
         self.approval_dialog(&ctx);
         if self.locked {
             self.lock_screen(ui);
+            return;
+        }
+        // First start (or no PIN yet): create one before anything else.
+        if self.security.app_lock_hash.is_none() {
+            self.setup_screen(ui);
             return;
         }
 

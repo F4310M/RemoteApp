@@ -8,7 +8,7 @@ Desktop remoto **diretto** tra due PC Windows e Linux: nessun server nel mezzo, 
 
 ### Con la finestra (consigliato)
 
-Fai doppio clic su `magicremote` (su Windows `magicremote.exe`). Si apre la finestra con quattro schede:
+Fai doppio clic su `magicremote` (su Windows `magicremote.exe`). La prima volta ti chiede di creare un PIN o una password, che servirà a ogni apertura. Poi si apre la finestra con quattro schede:
 
 - **I miei PC**: i PC che hai già usato, con un pallino verde se sono accesi. "Connetti" apre lo schermo remoto, "Sveglia e connetti" prima li accende. "+ Aggiungi PC" chiede indirizzo, impronta e password (con l'opzione di abbinarlo).
 - **Condividi questo PC**: "Avvia condivisione" mostra indirizzo, impronta e password da dare all'altro PC, chi è collegato ora e i PC abbinati (con "Revoca").
@@ -116,7 +116,7 @@ Limiti:
 - **Password fissa** (scheda Sicurezza o `magicremote set-password`): al posto di quella casuale a ogni avvio puoi sceglierne una (almeno 8 caratteri, non troppo facile). Viene salvata solo la sua impronta **Argon2id** con sale casuale, mai la password. `magicremote set-password --clear` torna a quella casuale.
 - **Blocco dei tentativi**: dopo 5 password sbagliate dallo stesso indirizzo, quell'indirizzo è bloccato per 15 minuti, poi 30, 60… (fino a 24 ore). Se arrivano più di 30 password sbagliate in 10 minuti da indirizzi diversi, l'accesso con password si sospende per tutti per 10 minuti. I PC abbinati entrano sempre. Dalla scheda Sicurezza si vedono gli indirizzi bloccati e si sbloccano.
 - **Conferma sul PC** (scheda Sicurezza o `magicremote approve on`): anche con la password giusta, un PC non abbinato entra solo se chi è davanti all'host preme "Consenti" entro 60 secondi. Da riga di comando la domanda compare nel terminale.
-- **Blocco dell'app**: un PIN o una password (hash Argon2id) da inserire per aprire Magic Remote, con blocco automatico dopo 5–60 minuti di inattività. Dopo 3 PIN sbagliati bisogna aspettare 30 secondi, poi sempre di più (fino a 15 minuti), anche chiudendo e riaprendo l'app. La condivisione resta attiva mentre l'app è bloccata. Il blocco protegge l'app aperta, non cifra i file sul disco.
+- **Blocco dell'app**: al primo avvio la finestra chiede di creare un PIN o una password (hash Argon2id), che da allora serve per aprire Magic Remote, con blocco automatico dopo 5–60 minuti di inattività. Dopo 3 PIN sbagliati bisogna aspettare 30 secondi, poi sempre di più (fino a 15 minuti), anche chiudendo e riaprendo l'app. La condivisione resta attiva mentre l'app è bloccata. Il blocco protegge l'app aperta, non cifra i file sul disco.
 - La finestra passa la password al processo di connessione attraverso una pipe (`connect --password-stdin`), non nella riga di comando né nelle variabili d'ambiente.
 - Un solo visualizzatore alla volta.
 

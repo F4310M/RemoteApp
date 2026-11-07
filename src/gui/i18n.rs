@@ -457,6 +457,28 @@ texts! {
     Allow => ["Consenti", "Allow", "Zulassen", "Permitir", "Autoriser", "Разрешить", "允许", "許可"],
     Deny => ["Rifiuta", "Deny", "Ablehnen", "Rechazar", "Refuser", "Отклонить", "拒绝", "拒否"],
     ErrLocked => ["troppe password sbagliate: riprova tra {wait}", "too many wrong passwords: try again in {wait}", "zu viele falsche Passwörter: erneut versuchen in {wait}", "demasiadas contraseñas incorrectas: vuelve a intentarlo en {wait}", "trop de mots de passe erronés : réessayez dans {wait}", "слишком много неверных паролей: повторите через {wait}", "密码错误次数过多：请在 {wait} 后重试", "パスワードの間違いが多すぎます。{wait} 後に再試行してください"],
+    SetupTitle => ["Proteggi Magic Remote", "Protect Magic Remote", "Magic Remote schützen", "Protege Magic Remote", "Protégez Magic Remote", "Защитите Magic Remote", "保护 Magic Remote", "Magic Remote を保護"],
+    SetupHelp => [
+        "Crea un PIN o una password: servirà ogni volta che apri l'app.",
+        "Create a PIN or password: you will need it every time you open the app.",
+        "Lege eine PIN oder ein Passwort fest: Du brauchst es bei jedem Öffnen der App.",
+        "Crea un PIN o una contraseña: lo necesitarás cada vez que abras la app.",
+        "Créez un PIN ou un mot de passe : il sera demandé à chaque ouverture de l'app.",
+        "Создайте PIN или пароль: он понадобится при каждом открытии приложения.",
+        "创建一个 PIN 或密码：以后每次打开应用都需要输入。",
+        "PIN またはパスワードを作成してください。アプリを開くたびに必要になります。",
+    ],
+    SetupButton => ["Crea e continua", "Create and continue", "Erstellen und weiter", "Crear y continuar", "Créer et continuer", "Создать и продолжить", "创建并继续", "作成して続行"],
+    SetupNote => [
+        "Viene salvata solo la sua impronta Argon2id. Potrai cambiarlo nella scheda Sicurezza.",
+        "Only its Argon2id hash is stored. You can change it in the Security tab.",
+        "Gespeichert wird nur sein Argon2id-Hash. Ändern kannst du es im Tab Sicherheit.",
+        "Solo se guarda su hash Argon2id. Podrás cambiarlo en la pestaña Seguridad.",
+        "Seule son empreinte Argon2id est enregistrée. Vous pourrez le changer dans l'onglet Sécurité.",
+        "Хранится только его хеш Argon2id. Изменить его можно на вкладке «Безопасность».",
+        "仅保存其 Argon2id 哈希。可在“安全”选项卡中更改。",
+        "保存されるのは Argon2id ハッシュだけです。「セキュリティ」タブで変更できます。",
+    ],
     ErrDeclined => ["la persona davanti al PC non ha consentito l'accesso", "the person at that PC did not allow the connection", "die Person an diesem PC hat die Verbindung nicht zugelassen", "la persona frente a ese PC no permitió la conexión", "la personne devant ce PC n'a pas autorisé la connexion", "человек за тем ПК не разрешил подключение", "对方电脑前的人未允许连接", "相手のPCの前にいる人が接続を許可しませんでした"],
 }
 

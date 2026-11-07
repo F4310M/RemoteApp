@@ -25,7 +25,7 @@ pub(super) struct Form {
     // Lock screen.
     unlock_input: String,
     unlock_error: bool,
-    focus_unlock: bool,
+    pub(super) focus_unlock: bool,
     /// The approval we already raised the window for.
     raised_for: Option<Instant>,
 }
@@ -162,6 +162,91 @@ impl App {
                             .color(WARN),
                     );
                 }
+                ui.add_space(14.0);
+                self.language_menu(ui);
+            });
+        });
+    }
+
+    /// First start: the person creates the PIN or password that will open
+    /// the app from now on.
+    pub(super) fn setup_screen(&mut self, ui: &mut egui::Ui) {
+        let l = self.lang;
+        let strength = auth::strength(&self.sec.pin1, auth::MIN_LOCK_LEN);
+        let short = strength == Strength::TooShort;
+        let differ = !self.sec.pin2.is_empty() && self.sec.pin1 != self.sec.pin2;
+        let ready = !short && self.sec.pin1 == self.sec.pin2;
+        egui::CentralPanel::default().show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.add_space((ui.available_height() * 0.10).max(10.0));
+                padlock(ui, 64.0);
+                ui.add_space(8.0);
+                ui.label(RichText::new(t(l, K::SetupTitle)).size(22.0).strong());
+                ui.add_space(2.0);
+                ui.label(RichText::new(t(l, K::SetupHelp)).color(MUTED));
+                ui.add_space(12.0);
+                let field = |ui: &mut egui::Ui, text: &mut String, hint: &str| {
+                    ui.add(
+                        egui::TextEdit::singleline(text)
+                            .password(true)
+                            .hint_text(hint)
+                            .align(egui::Align2::CENTER_CENTER)
+                            .desired_width(260.0)
+                            .font(egui::TextStyle::Heading),
+                    )
+                };
+                let r1 = field(ui, &mut self.sec.pin1, t(l, K::NewPin));
+                if self.sec.focus_unlock {
+                    r1.request_focus();
+                    self.sec.focus_unlock = false;
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(260.0, 18.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| strength_meter(ui, l, strength),
+                );
+                let r2 = field(ui, &mut self.sec.pin2, t(l, K::RepeatPassword));
+                let enter = r2.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if differ {
+                    ui.label(RichText::new(t(l, K::PwMismatch)).color(BAD));
+                } else {
+                    ui.label(
+                        RichText::new(tf(
+                            l,
+                            K::PwMinLen,
+                            &[("n", &auth::MIN_LOCK_LEN.to_string())],
+                        ))
+                        .small()
+                        .color(MUTED),
+                    );
+                }
+                ui.add_space(4.0);
+                let click = ui
+                    .add_enabled(
+                        ready,
+                        egui::Button::new(RichText::new(t(l, K::SetupButton)).strong().size(16.0))
+                            .fill(ACCENT.gamma_multiply(0.35))
+                            .min_size(egui::vec2(260.0, 32.0)),
+                    )
+                    .clicked();
+                if (click || enter) && ready {
+                    match auth::hash_secret(&self.sec.pin1) {
+                        Ok(h) => {
+                            self.security.app_lock_hash = Some(h);
+                            if self.security.auto_lock_minutes == 0 {
+                                self.security.auto_lock_minutes = 15;
+                            }
+                            self.save_security();
+                            self.sec.pin1.clear();
+                            self.sec.pin2.clear();
+                            self.last_activity = Instant::now();
+                            self.toast(t(l, K::PinSaved), false);
+                        }
+                        Err(e) => self.toast(tf(l, K::Error, &[("e", &e.to_string())]), true),
+                    }
+                }
+                ui.add_space(10.0);
+                ui.label(RichText::new(t(l, K::SetupNote)).small().color(MUTED));
                 ui.add_space(14.0);
                 self.language_menu(ui);
             });
@@ -383,9 +468,6 @@ impl App {
                         }
                         if ui.button(t(l, K::ChangePin)).clicked() {
                             self.sec.editing_lock = Some(true);
-                        }
-                        if ui.button(t(l, K::Remove)).clicked() {
-                            self.sec.editing_lock = Some(false);
                         }
                     });
                 }
